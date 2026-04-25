@@ -957,6 +957,9 @@ export default function FridgeBee() {
       if (raw) {
         const parsed = sanitizeState(JSON.parse(raw));
         if (parsed) {
+          // Migration: earlier versions stored country='US' (INIT default) even for non-US
+          // timezones. If the device clearly disagrees, override so prices/UI localise.
+          if (parsed.country === 'US' && country !== 'US') parsed.country = country;
           initialLocalStateRef.current = parsed;
           setS(parsed);
         }
@@ -1332,7 +1335,10 @@ export default function FridgeBee() {
   // ── Onboarding ──────────────────────────────────────────────────────────────
   function finishOB() {
     const today = new Date().toISOString().slice(0,10);
-    const country = s.country || detectCountry();
+    // Always trust detectCountry() at finish — s.country starts at the 'US' INIT
+    // default which was overriding the actual timezone-detected country before
+    // the user had a chance to change it. Timezone is the better signal.
+    const country = detectCountry();
     const items = (obPicks.length > 0 ? obPicks : QUICK_ITEMS.slice(0,5).map(it => it.name)).map(name => {
       const known = QUICK_ITEMS.find(it => it.name.toLowerCase() === name.toLowerCase());
       if (known) return { ...known, id: uid(), added: today };
@@ -1349,8 +1355,10 @@ export default function FridgeBee() {
         category,
         qty: 1,
         unit: 'pcs',
-        expiry: daysFromNow(CATEGORY_EXPIRY[category] || 7),
-        cost: estimatePrice(name, country),
+        // Per-item expiry override (mango = 5 days, methi = 3, eggs = 21, ...) instead
+        // of the blunt category-default 7 days.
+        expiry: daysFromNow(expiryDaysForName(name, category)),
+        cost: estimatePrice(name, country, 1, 'pcs'),
       };
     });
     up({ onboarded:true, items, country });
