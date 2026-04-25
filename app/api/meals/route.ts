@@ -196,14 +196,15 @@ export async function POST(req: NextRequest) {
 
     let raw = '';
     let provider = '';
-    let lastError = '';
+    let anthropicError = '';
+    let openaiError = '';
 
     if (ANTHROPIC_KEY) {
       try {
         raw = await generateWithAnthropic({ systemPrompt, userPrompt });
         provider = 'claude-sonnet-4-6';
       } catch (e) {
-        lastError = e instanceof Error ? e.message : 'Anthropic call failed';
+        anthropicError = e instanceof Error ? e.message : 'Anthropic call failed';
       }
     }
 
@@ -212,12 +213,18 @@ export async function POST(req: NextRequest) {
         raw = await generateWithOpenAI({ systemPrompt, userPrompt });
         provider = 'gpt-4o';
       } catch (e) {
-        lastError = e instanceof Error ? e.message : 'OpenAI call failed';
+        openaiError = e instanceof Error ? e.message : 'OpenAI call failed';
       }
     }
 
     if (!raw) {
-      return NextResponse.json({ meals: [], error: lastError || 'No model produced a response.', detected });
+      return NextResponse.json({
+        meals: [],
+        error: anthropicError || openaiError || 'No model produced a response.',
+        anthropicError,
+        openaiError,
+        detected,
+      });
     }
 
     const meals = parseMealsJson(raw);
