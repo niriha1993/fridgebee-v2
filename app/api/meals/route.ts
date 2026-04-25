@@ -176,6 +176,14 @@ export async function POST(req: NextRequest) {
     if (!ANTHROPIC_KEY && !OPENAI_KEY) {
       return NextResponse.json({ meals: [], error: 'Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is configured on the server.' });
     }
+    // Debug: surface which keys were found (names only, never values), so the client can see
+    // why a particular provider was picked. Helpful when the var got named non-canonically.
+    const detected: Record<string, boolean> = {
+      ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
+      Claude_API_Key:    !!process.env.Claude_API_Key,
+      CLAUDE_API_KEY:    !!process.env.CLAUDE_API_KEY,
+      OPENAI_API_KEY:    !!process.env.OPENAI_API_KEY,
+    };
 
     const slot = String(mealType || 'dinner').toLowerCase();
     const itemList = describeItems(items);
@@ -209,11 +217,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (!raw) {
-      return NextResponse.json({ meals: [], error: lastError || 'No model produced a response.' });
+      return NextResponse.json({ meals: [], error: lastError || 'No model produced a response.', detected });
     }
 
     const meals = parseMealsJson(raw);
-    return NextResponse.json({ meals, provider });
+    return NextResponse.json({ meals, provider, detected });
   } catch (error) {
     return NextResponse.json({ meals: [], error: error instanceof Error ? error.message : 'Meal generation failed' });
   }
