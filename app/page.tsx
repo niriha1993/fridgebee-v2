@@ -259,6 +259,19 @@ const CUISINE_COMPASS: Array<{ id: string; emoji: string; label: string; pulls: 
 // Diet preference quick-toggles shown during onboarding (subset of DIETARY_OPTIONS).
 const DIET_QUICK = ['Vegetarian','Vegan','Halal','Other'];
 
+// Cuisine-aware quick suggestions. Each list orders by what someone cooking
+// in that style would expect to keep on hand.
+const CUISINE_QUICK: Record<string, string[]> = {
+  Indian:        ['Onion','Tomato','Paneer','Dal','Atta','Coriander','Yogurt','Potato','Spinach','Methi','Bhindi','Chickpeas'],
+  Mediterranean: ['Tomato','Cucumber','Yogurt','Feta','Lemon','Bell pepper','Chickpeas','Pasta','Bread','Olives'],
+  Western:       ['Eggs','Milk','Bread','Cheese','Tomato','Spinach','Avocado','Lettuce','Pasta','Chicken','Bell pepper','Carrot'],
+  'East Asian':  ['Rice','Eggs','Tofu','Cabbage','Ginger','Garlic','Cucumber','Spring onion','Carrot','Mushrooms'],
+  Latin:         ['Tomato','Onion','Avocado','Lime','Beans','Rice','Cheese','Tortilla','Bell pepper','Corn'],
+};
+
+const VEG_EXCLUDE = ['Chicken','Fish','Salmon','Prawns','Mutton','Lamb','Beef','Pork'];
+const VEGAN_EXCLUDE = ['Eggs','Milk','Cheese','Butter','Yogurt','Paneer','Mozzarella','Feta'];
+
 // Quick-pick items for onboarding — tap to add
 const QUICK_ITEMS: Omit<FoodItem,'id'|'added'>[] = [
   { name:'Eggs',       emoji:'🥚', shelf:'fridge',  category:'Dairy',   qty:6,   unit:'pcs', expiry:daysFromNow(14) },
@@ -281,7 +294,44 @@ const QUICK_ITEMS: Omit<FoodItem,'id'|'added'>[] = [
   { name:'Potato',     emoji:'🥔', shelf:'pantry',  category:'Produce', qty:4,   unit:'pcs', expiry:daysFromNow(21) },
   { name:'Carrot',     emoji:'🥕', shelf:'fridge',  category:'Produce', qty:3,   unit:'pcs', expiry:daysFromNow(14) },
   { name:'Lemon',      emoji:'🍋', shelf:'fridge',  category:'Produce', qty:3,   unit:'pcs', expiry:daysFromNow(14) },
+  { name:'Atta',       emoji:'🌾', shelf:'pantry',  category:'Grains',  qty:1,   unit:'kg',  expiry:daysFromNow(180)},
+  { name:'Methi',      emoji:'🌿', shelf:'fridge',  category:'Produce', qty:1,   unit:'bunch', expiry:daysFromNow(5) },
+  { name:'Bhindi',     emoji:'🥒', shelf:'fridge',  category:'Produce', qty:500, unit:'g',   expiry:daysFromNow(7) },
+  { name:'Chickpeas',  emoji:'🫘', shelf:'pantry',  category:'Grains',  qty:500, unit:'g',   expiry:daysFromNow(180)},
+  { name:'Tofu',       emoji:'🥡', shelf:'fridge',  category:'Meat',    qty:300, unit:'g',   expiry:daysFromNow(7) },
+  { name:'Pasta',      emoji:'🍝', shelf:'pantry',  category:'Grains',  qty:500, unit:'g',   expiry:daysFromNow(365)},
+  { name:'Avocado',    emoji:'🥑', shelf:'fridge',  category:'Produce', qty:2,   unit:'pcs', expiry:daysFromNow(5) },
+  { name:'Lettuce',    emoji:'🥬', shelf:'fridge',  category:'Produce', qty:1,   unit:'pcs', expiry:daysFromNow(7) },
+  { name:'Cucumber',   emoji:'🥒', shelf:'fridge',  category:'Produce', qty:2,   unit:'pcs', expiry:daysFromNow(7) },
+  { name:'Beans',      emoji:'🫘', shelf:'pantry',  category:'Grains',  qty:500, unit:'g',   expiry:daysFromNow(365)},
 ];
+
+// Build the onboarding grid based on country + selected cuisines + diet.
+// Cuisine matches go first (so "Indian" lands paneer/dal/atta before generic items),
+// then country defaults, then everything else, with diet exclusions applied.
+function pickContextualQuickItems(country: string, cuisines: string[], diets: string[], max: number): Omit<FoodItem,'id'|'added'>[] {
+  const dietsLower = diets.map(d => d.toLowerCase());
+  const isVegan = dietsLower.some(d => d.includes('vegan'));
+  const isVegetarian = isVegan || dietsLower.some(d => d.includes('vegetarian'));
+  const exclude = new Set<string>();
+  if (isVegetarian) VEG_EXCLUDE.forEach(n => exclude.add(n));
+  if (isVegan) VEGAN_EXCLUDE.forEach(n => exclude.add(n));
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const c of cuisines) {
+    for (const name of (CUISINE_QUICK[c] || [])) {
+      if (!exclude.has(name) && !seen.has(name)) { seen.add(name); ordered.push(name); }
+    }
+  }
+  for (const name of (QUICK_BY_COUNTRY[country] || QUICK_BY_COUNTRY.US)) {
+    if (!exclude.has(name) && !seen.has(name)) { seen.add(name); ordered.push(name); }
+  }
+  for (const it of QUICK_ITEMS) {
+    if (ordered.length >= max) break;
+    if (!exclude.has(it.name) && !seen.has(it.name)) { seen.add(it.name); ordered.push(it.name); }
+  }
+  return ordered.slice(0, max).map(name => QUICK_ITEMS.find(it => it.name === name)).filter((x): x is Omit<FoodItem,'id'|'added'> => Boolean(x));
+}
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 function BeeSVG({ size = 48 }: { size?: number }) {
@@ -1254,11 +1304,8 @@ export default function FridgeBee() {
 
     // ── Step 1: Quick fridge setup
     const obCountry = s.country || detectCountry();
-    const localItemNames = QUICK_BY_COUNTRY[obCountry] || QUICK_BY_COUNTRY.US;
-    const localItems = localItemNames
-      .map(n => QUICK_ITEMS.find(it => it.name === n))
-      .filter((x): x is Omit<FoodItem,'id'|'added'> => Boolean(x))
-      .slice(0, 6);
+    // Reactive: picks change as the user toggles diet / cuisine.
+    const localItems = pickContextualQuickItems(obCountry, s.cuisines, s.dietaryFilters, 8);
     return (
       <div className="ob-wrap" style={{background:'var(--cr)'}}>
         <div style={{padding:'20px 20px 8px', flexShrink:0}}>
@@ -1350,23 +1397,23 @@ export default function FridgeBee() {
           <div style={{fontSize:13, fontWeight:800, color:'var(--ink)', marginBottom:10, fontFamily:'Fraunces, Georgia, serif'}}>
             What&apos;s in your fridge right now?
           </div>
-          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8, marginBottom:10}}>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:6, marginBottom:10}}>
             {localItems.map(it => {
               const sel = obPicks.includes(it.name);
               return (
                 <button key={it.name}
                   onClick={()=>setObPicks(prev => sel ? prev.filter(n=>n!==it.name) : [...prev, it.name])}
                   style={{
-                    display:'flex', flexDirection:'column', alignItems:'center', gap:4,
-                    padding:'12px 6px', borderRadius:14, border:'1.5px solid',
-                    fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+                    display:'flex', flexDirection:'column', alignItems:'center', gap:2,
+                    padding:'8px 2px', borderRadius:11, border:'1.5px solid',
+                    fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
                     transition:'all .12s',
                     borderColor: sel ? 'var(--bee)' : 'var(--bd)',
                     background:  sel ? 'var(--beel)' : 'var(--white)',
                     color:       sel ? 'var(--beed)' : 'var(--ink)',
                   }}>
-                  <span style={{fontSize:24, lineHeight:1}}>{it.emoji}</span>
-                  {it.name}
+                  <span style={{fontSize:20, lineHeight:1}}>{it.emoji}</span>
+                  <span style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:'100%'}}>{it.name}</span>
                 </button>
               );
             })}
@@ -1379,7 +1426,7 @@ export default function FridgeBee() {
             ))}
           </div>
           <input type="text"
-            placeholder="Type any item and press Enter (e.g. methi, tofu)…"
+            placeholder="Type"
             onKeyDown={e=>{
               if (e.key==='Enter') {
                 const v = (e.target as HTMLInputElement).value.trim();
@@ -1436,12 +1483,21 @@ export default function FridgeBee() {
 
   // ── Add item ─────────────────────────────────────────────────────────────────
   function addItem(item: Omit<FoodItem,'id'|'added'>) {
-    const cnt = addCount + 1;
-    setAddCount(cnt);
-    localStorage.setItem('fb_add_cnt', String(cnt));
-    if (cnt > 30) { setShowPaywall(true); return; }
-    up({items:[...s.items, {...item, id:uid(), added:new Date().toISOString().slice(0,10)}]});
-    showT(`Added ${item.name} ✓`);
+    addItems([item]);
+  }
+  // Batch-add. Uses a functional setState so calling this with an array of N items
+  // appends all N atomically — avoids the closure bug where a forEach with addItem()
+  // would only land the last item because each call read s.items from a stale snapshot.
+  function addItems(list: Omit<FoodItem,'id'|'added'>[]) {
+    if (!list.length) return;
+    const cntAfter = addCount + list.length;
+    setAddCount(cntAfter);
+    localStorage.setItem('fb_add_cnt', String(cntAfter));
+    if (cntAfter > 30) { setShowPaywall(true); return; }
+    const today = new Date().toISOString().slice(0,10);
+    const stamped: FoodItem[] = list.map(it => ({ ...it, id: uid(), added: today }));
+    setS(prev => ({ ...prev, items: [...prev.items, ...stamped] }));
+    showT(list.length === 1 ? `Added ${list[0].name} ✓` : `Added ${list.length} items ✓`);
   }
   function removeItem(id: string) {
     const it = s.items.find(i=>i.id===id);
@@ -1561,12 +1617,12 @@ export default function FridgeBee() {
   }
   function confirmParsed() {
     const tally: Record<Shelf, number> = { fridge: 0, freezer: 0, pantry: 0 };
-    parsed.forEach(it => {
-      if (!it.name) return;
+    const batch = parsed.filter(it => it.name).map(it => {
       const sh = (it.shelf || 'fridge') as Shelf;
       tally[sh] = (tally[sh] || 0) + 1;
-      addItem({ name: it.name, emoji: it.emoji || '📦', shelf: sh, category: it.category || 'Other', qty: it.qty || 1, unit: it.unit || 'pcs', expiry: it.expiry || daysFromNow(7) });
+      return { name: it.name!, emoji: it.emoji || '📦', shelf: sh, category: it.category || 'Other', qty: it.qty || 1, unit: it.unit || 'pcs', expiry: it.expiry || daysFromNow(7) };
     });
+    addItems(batch);
     // Switch to the shelf tab where most items landed so user actually sees what was added.
     const dominantShelf = (Object.entries(tally).sort((a, b) => b[1] - a[1])[0]?.[0] as Shelf) || 'fridge';
     if (tally[dominantShelf] > 0) {
@@ -2660,6 +2716,10 @@ export default function FridgeBee() {
   // ── Profile screen ────────────────────────────────────────────────────────────
   function ScreenProfile() {
     const planLabel = authUser ? 'Saved account' : 'Guest demo';
+    const detectedCountry = s.country || detectCountry();
+    const countryName = COUNTRY_CURRENCY[detectedCountry]?.name || detectedCountry;
+    const COUNTRY_FLAGS: Record<string,string> = { IN:'🇮🇳', PK:'🇵🇰', SG:'🇸🇬', MY:'🇲🇾', AE:'🇦🇪', GB:'🇬🇧', AU:'🇦🇺', US:'🇺🇸' };
+    const countryFlag = COUNTRY_FLAGS[detectedCountry] || '🌍';
     function toggleSection(key: keyof typeof openProfileSections) {
       setOpenProfileSections(prev => ({ ...prev, [key]: !prev[key] }));
     }
@@ -2670,6 +2730,9 @@ export default function FridgeBee() {
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
             <span style={{fontSize:20}}>🐝</span>
             <span style={{fontSize:11,color:'var(--mu)',fontWeight:600}}>personalised for everyone</span>
+            <span style={{marginLeft:'auto', fontSize:11, color:'var(--mu)', fontWeight:600, display:'flex', alignItems:'center', gap:4}}>
+              <span style={{fontSize:14}}>{countryFlag}</span>{countryName}
+            </span>
           </div>
           <h1 style={{fontSize:24,color:'var(--ink)',marginBottom:2}}>fridge<span style={{color:'var(--bee)'}}>Bee</span></h1>
           <p style={{fontSize:14,color:'var(--mu)',marginBottom:14}}>Who&apos;s eating tonight?</p>
@@ -2977,14 +3040,34 @@ export default function FridgeBee() {
               </button>
             )}
             <button
-              onClick={()=>{
-                if(confirm('This will clear all your fridge data and preferences. Are you sure?')){
-                  if (authUser) supabase.from('user_app_state').delete().eq('user_id', authUser.id);
-                  localStorage.removeItem(STORAGE_KEY);
-                  localStorage.removeItem('fb_add_cnt');
-                  setS(INIT);
-                  setTab('fridge');
+              onClick={async ()=>{
+                if(!confirm('This will clear all your fridge data and preferences. Are you sure?')) return;
+                if (authUser) {
+                  await supabase.from('user_app_state').delete().eq('user_id', authUser.id);
+                  await supabase.auth.signOut();
                 }
+                localStorage.removeItem(STORAGE_KEY);
+                localStorage.removeItem('fb_add_cnt');
+                setS(INIT);
+                // Clear UI state too, otherwise the next onboarding still shows previous picks/cuisines.
+                setObPicks([]);
+                setSearch('');
+                setCatFilter('All');
+                setTab('fridge');
+                setShelf('fridge');
+                setActiveProfile('me');
+                setMeals([]);
+                setPlannedDays([]);
+                setEditItem(null);
+                setEditMember(null);
+                setShowMember(false);
+                setShowAdd(false);
+                setShowPaywall(false);
+                setRecipeScreen(null);
+                setVoiceText('');
+                setParsed([]);
+                setParsedEditable([]);
+                setScanFile(null);
               }}
               style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'14px 16px',borderRadius:14,border:'1.5px solid #EF4444',background:'#FFF5F5',cursor:'pointer',fontFamily:'inherit',textAlign:'left',marginBottom:8}}>
               <span style={{fontSize:20}}>🚪</span>
@@ -3273,11 +3356,30 @@ export default function FridgeBee() {
     }
 
     function confirmAll() {
-      parsedEditable.forEach(it => {
-        if (it.name) addItem({ name:it.name, emoji:it.emoji||'📦', shelf:it.shelf||'fridge',
-          category:it.category||'Other', qty:it.qty||1, unit:it.unit||'pcs',
-          expiry:it.expiry||daysFromNow(7), cost:it.cost, addedBy:it.addedBy||'manual' });
-      });
+      const batch = parsedEditable.filter(it => it.name).map(it => ({
+        name: it.name!,
+        emoji: it.emoji || '📦',
+        shelf: (it.shelf || 'fridge') as Shelf,
+        category: it.category || 'Other',
+        qty: it.qty || 1,
+        unit: it.unit || 'pcs',
+        expiry: it.expiry || daysFromNow(7),
+        cost: it.cost,
+        addedBy: (it.addedBy || 'manual') as 'manual' | 'voice' | 'scan',
+      }));
+      addItems(batch);
+      // Land the user on the fridge tab where the items appear, with filters cleared.
+      const dominantShelf = (() => {
+        const tally: Record<Shelf, number> = { fridge: 0, freezer: 0, pantry: 0 };
+        batch.forEach(it => { tally[it.shelf] = (tally[it.shelf] || 0) + 1; });
+        return (Object.entries(tally).sort((a, b) => b[1] - a[1])[0]?.[0] as Shelf) || 'fridge';
+      })();
+      if (batch.length > 0) {
+        setShelf(dominantShelf);
+        setTab('fridge');
+        setSearch('');
+        setCatFilter('All');
+      }
       setParsedEditable([]); setParsed([]); setShowAdd(false); setScanFile(null); setShowManualTypeFallback(false); setVoiceLoading(false); setVoiceText('');
     }
 
@@ -3336,7 +3438,18 @@ export default function FridgeBee() {
                       </div>
                     ))}
                     <button className="btn-bee" onClick={() => {
-                      parsed.forEach(it => { if (it.name) addItem({ name:it.name, emoji:it.emoji||'📦', shelf:it.shelf||'fridge', category:it.category||'Other', qty:it.qty||1, unit:it.unit||'pcs', expiry:it.expiry||daysFromNow(7), addedBy:'voice' }); });
+                      const batch = parsed.filter(it => it.name).map(it => ({
+                        name: it.name!,
+                        emoji: it.emoji || '📦',
+                        shelf: (it.shelf || 'fridge') as Shelf,
+                        category: it.category || 'Other',
+                        qty: it.qty || 1,
+                        unit: it.unit || 'pcs',
+                        expiry: it.expiry || daysFromNow(7),
+                        addedBy: 'voice' as const,
+                      }));
+                      addItems(batch);
+                      if (batch.length) { setTab('fridge'); setSearch(''); setCatFilter('All'); }
                       setParsed([]); setShowAdd(false); setVoiceText('');
                     }} style={{ marginTop:8 }}>Add {parsed.length} items →</button>
                   </div>
