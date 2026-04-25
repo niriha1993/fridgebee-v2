@@ -2618,6 +2618,24 @@ export default function FridgeBee() {
       stores.forEach(st => window.open(st.url(query), '_blank'));
     }
 
+    function shareToWhatsApp() {
+      const toBuyItems = items.filter(it => !it.checked);
+      if (!toBuyItems.length) { showT('Nothing to share — add items first'); return; }
+      const lines = toBuyItems.map(it => {
+        const qtyUnit = it.qty && it.unit ? `${it.qty}${it.unit} ` : '';
+        return `• ${qtyUnit}${it.name}`;
+      });
+      const total = toBuyItems.reduce((sum, it) => sum + (it.cost ?? 0) * it.qty, 0);
+      const totalLine = total > 0 ? `\nEst. total: ${currency}${total.toFixed(0)}\n` : '';
+      const msg =
+        `🛒 *Shopping list*\n\n` +
+        `${lines.join('\n')}\n` +
+        `${totalLine}\n` +
+        `_Created on FridgeBee 🐝 — ${typeof window !== 'undefined' ? window.location.origin : 'fridgebee-v2.vercel.app'}_`;
+      const url = `https://wa.me/?text=${encodeURIComponent(msg)}`;
+      window.open(url, '_blank');
+    }
+
     const regionNames = { IN: 'INDIA', SG: 'SINGAPORE', US: 'USA' };
 
     return (
@@ -2749,10 +2767,17 @@ export default function FridgeBee() {
               ))}
             </div>
             {items.filter(i=>!i.checked).length > 0 && (
-              <button onClick={openAllStores}
-                style={{ width:'100%', padding:'13px', borderRadius:14, border:'1.5px solid var(--bd)', background:'var(--white)', color:'var(--ink)', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:'inherit', marginBottom:8 }}>
-                Open all stores at once
-              </button>
+              <>
+                <button onClick={shareToWhatsApp}
+                  style={{ width:'100%', padding:'13px', borderRadius:14, border:'1.5px solid #25D366', background:'#F0FFF4', color:'#1A7A36', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:'inherit', marginBottom:8, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+                  <span style={{ fontSize:16 }}>💬</span>
+                  Share list on WhatsApp
+                </button>
+                <button onClick={openAllStores}
+                  style={{ width:'100%', padding:'13px', borderRadius:14, border:'1.5px solid var(--bd)', background:'var(--white)', color:'var(--ink)', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:'inherit', marginBottom:8 }}>
+                  Open all stores at once
+                </button>
+              </>
             )}
             <div style={{ fontSize:11, color:'var(--mu)', textAlign:'center', lineHeight:1.5 }}>
               Search links only. Your browser may block multi-tab popups — allow them if prompted.
