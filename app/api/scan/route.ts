@@ -46,9 +46,9 @@ function normalizeItem(it: { item_name?: string; quantity?: number; unit?: strin
     category,
     emoji: it.emoji || '📦',
     shelf: guessShelf(category),
-    expiry: expiryFromNow(expiryDaysFor(category)),
-    // CRITICAL: keep the printed price the model OCR'd from the receipt.
-    // Without this the client always fell through to estimatePrice ≈ $2.
+    // No expiry stamp here — let the client decide via expiryDaysForName(name, category)
+    // so per-item shelf life (mango 5d, paneer 7d, rice 365d, etc.) actually applies.
+    // Previously this forced a category-default 7d that overrode the per-item table.
     price: typeof it.price === 'number' && it.price > 0 ? it.price : undefined,
   };
 }

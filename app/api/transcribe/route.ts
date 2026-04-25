@@ -208,7 +208,7 @@ function normalizeItem(it: { item_name?: string; quantity?: number; unit?: strin
     category,
     emoji: it.emoji || '📦',
     shelf: guessShelf(category),
-    expiry: expiryFromNow(expiryDaysFor(category)),
+    // No expiry stamp — client uses expiryDaysForName for per-item shelf life.
     price: typeof it.price === 'number' && it.price > 0 ? it.price : undefined,
   };
 }
@@ -229,7 +229,7 @@ function directKnownItemsFromText(text: string) {
     category: item.category,
     emoji: item.emoji,
     shelf: guessShelf(item.category),
-    expiry: expiryFromNow(expiryDaysFor(item.category)),
+    // No expiry — client computes per-item via expiryDaysForName.
   }));
 }
 
@@ -250,7 +250,7 @@ function whitespaceFallbackItems(text: string) {
       name: name.charAt(0).toUpperCase() + name.slice(1),
       qty: 1, unit: 'pcs', category: 'Other', emoji: '📦',
       shelf: guessShelf('Other'),
-      expiry: expiryFromNow(expiryDaysFor('Other')),
+      // expiry computed client-side
     }));
 }
 
@@ -282,7 +282,7 @@ export async function POST(req: NextRequest) {
         .split(/,|;|\band\b|\bthen\b|\bwith\b|\n/gi)
         .map(v => v.trim())
         .filter(Boolean)
-        .map(name => ({ name, qty: 1, unit: 'pcs', category: 'Other', emoji: '📦', shelf: 'fridge', expiry: expiryFromNow(7) }));
+        .map(name => ({ name, qty: 1, unit: 'pcs', category: 'Other', emoji: '📦', shelf: 'fridge' }));
       return NextResponse.json({ items: fallback, transcript: textOnly });
     }
 

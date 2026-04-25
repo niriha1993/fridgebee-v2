@@ -264,15 +264,16 @@ function detectCountry() {
 
 // Six common picks shown by default during onboarding, keyed by country.
 // First 6 = "common in your area", the rest are still shown if user expands.
+// Country-specific fridge starters — always FRIDGE items (no rice/dal/atta).
 const QUICK_BY_COUNTRY: Record<string, string[]> = {
-  IN: ['Onion','Tomato','Paneer','Dal','Coriander','Yogurt'],
-  PK: ['Onion','Tomato','Yogurt','Coriander','Eggs','Bread'],
-  SG: ['Eggs','Rice','Cheese','Spinach','Carrot','Tomato'],
-  MY: ['Rice','Eggs','Carrot','Onion','Tomato','Spinach'],
-  AE: ['Eggs','Tomato','Yogurt','Onion','Carrot','Cheese'],
-  GB: ['Eggs','Milk','Bread','Cheese','Tomato','Spinach'],
-  AU: ['Eggs','Milk','Bread','Cheese','Tomato','Spinach'],
-  US: ['Eggs','Milk','Bread','Cheese','Tomato','Spinach'],
+  IN: ['Tomato','Paneer','Yogurt','Coriander','Onion','Methi','Bhindi','Cucumber'],
+  PK: ['Yogurt','Coriander','Eggs','Tomato','Onion','Mint','Cucumber','Cheese'],
+  SG: ['Eggs','Cheese','Spinach','Carrot','Tomato','Yogurt','Cucumber','Tofu'],
+  MY: ['Eggs','Carrot','Tomato','Spinach','Cucumber','Cabbage','Tofu','Yogurt'],
+  AE: ['Eggs','Tomato','Yogurt','Cucumber','Carrot','Cheese','Lettuce','Mint'],
+  GB: ['Eggs','Milk','Cheese','Tomato','Spinach','Lettuce','Cucumber','Carrot'],
+  AU: ['Eggs','Milk','Cheese','Tomato','Spinach','Avocado','Lettuce','Carrot'],
+  US: ['Eggs','Milk','Cheese','Tomato','Spinach','Avocado','Lettuce','Bell pepper'],
 };
 
 // Cuisine compass — broad regional groupings the user picks from in 1 tap.
@@ -288,14 +289,15 @@ const CUISINE_COMPASS: Array<{ id: string; emoji: string; label: string; pulls: 
 // Diet preference quick-toggles shown during onboarding (subset of DIETARY_OPTIONS).
 const DIET_QUICK = ['Vegetarian','Vegan','Halal','Other'];
 
-// Cuisine-aware quick suggestions. Each list orders by what someone cooking
-// in that style would expect to keep on hand.
+// Cuisine-aware quick suggestions for the onboarding "What's in your fridge?" grid.
+// FRIDGE-only — fresh items that actually live in the cold compartment. Pantry staples
+// (dal, atta, rice, pasta) are excluded since the question is about the fridge.
 const CUISINE_QUICK: Record<string, string[]> = {
-  Indian:        ['Onion','Tomato','Paneer','Dal','Atta','Coriander','Yogurt','Potato','Spinach','Methi','Bhindi','Chickpeas'],
-  Mediterranean: ['Tomato','Cucumber','Yogurt','Feta','Lemon','Bell pepper','Chickpeas','Pasta','Bread','Olives'],
-  Western:       ['Eggs','Milk','Bread','Cheese','Tomato','Spinach','Avocado','Lettuce','Pasta','Chicken','Bell pepper','Carrot'],
-  'East Asian':  ['Rice','Eggs','Tofu','Cabbage','Ginger','Garlic','Cucumber','Spring onion','Carrot','Mushrooms'],
-  Latin:         ['Tomato','Onion','Avocado','Lime','Beans','Rice','Cheese','Tortilla','Bell pepper','Corn'],
+  Indian:        ['Tomato','Onion','Paneer','Coriander','Yogurt','Methi','Bhindi','Cabbage','Cucumber','Capsicum','Mint','Spinach'],
+  Mediterranean: ['Tomato','Cucumber','Yogurt','Feta','Lemon','Bell pepper','Olives','Mozzarella','Spinach','Eggs'],
+  Western:       ['Eggs','Milk','Cheese','Tomato','Spinach','Avocado','Lettuce','Bell pepper','Carrot','Mushrooms'],
+  'East Asian':  ['Eggs','Tofu','Cabbage','Ginger','Garlic','Cucumber','Mushrooms','Carrot','Spinach','Lemon'],
+  Latin:         ['Tomato','Onion','Avocado','Lime','Cilantro','Bell pepper','Cheese','Lettuce','Corn'],
 };
 
 const VEG_EXCLUDE = ['Chicken','Fish','Salmon','Prawns','Mutton','Lamb','Beef','Pork'];
@@ -1473,15 +1475,18 @@ export default function FridgeBee() {
           </div>
           <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:18}}>
             {DIET_QUICK.map(d => {
-              const on = s.dietaryFilters.includes(d) || (d === 'Other' && s.dietaryFilters.some(f => !DIET_QUICK.includes(f)));
+              const on = s.dietaryFilters.includes(d);
               return (
                 <button key={d}
                   onClick={() => {
-                    if (d === 'Other') return;
-                    up({ dietaryFilters: on
+                    // Vegetarian and Vegan are mutually exclusive — picking one removes the other.
+                    let next = on
                       ? s.dietaryFilters.filter(f => f !== d)
-                      : [...s.dietaryFilters.filter(f => !['Vegan','Vegetarian'].includes(f) || f === d || (d !== 'Vegan' && d !== 'Vegetarian')), d]
-                    });
+                      : [...s.dietaryFilters, d];
+                    if (!on && (d === 'Vegan' || d === 'Vegetarian')) {
+                      next = next.filter(f => f === d || !['Vegan','Vegetarian'].includes(f));
+                    }
+                    up({ dietaryFilters: next });
                   }}
                   style={{
                     padding:'7px 14px', borderRadius:999, border:'1.5px solid',
@@ -2247,10 +2252,10 @@ export default function FridgeBee() {
             <button
               onClick={refreshMeals}
               disabled={mealsLoading}
-              style={{ display:'flex', alignItems:'center', gap:8, background: mealsLoading ? '#FCEAE5' : '#FFF5F0', border:'1.5px solid #F4C8C1', borderRadius:16, padding:'10px 14px', cursor: mealsLoading ? 'wait' : 'pointer', fontFamily:'inherit', color:'#C94A3A', fontWeight:700, fontSize:14, opacity: mealsLoading ? 0.7 : 1 }}
+              style={{ display:'flex', alignItems:'center', gap:8, background:'#FFF5F0', border:'1.5px solid #F4C8C1', borderRadius:16, padding:'10px 14px', cursor: mealsLoading ? 'wait' : 'pointer', fontFamily:'inherit', color:'#C94A3A', fontWeight:700, fontSize:14 }}
             >
               <span style={{ display:'inline-block', animation: mealsLoading ? 'spin 1s linear infinite' : 'none', transformOrigin:'50% 50%' }}>↻</span>
-              {mealsLoading ? 'Refreshing…' : 'Refresh'}
+              Refresh
             </button>
           </div>
           {/* Preferences banner — auto-hides 4s after the meals tab opens. */}
@@ -2767,31 +2772,17 @@ export default function FridgeBee() {
               ))}
             </div>
             {items.filter(i=>!i.checked).length > 0 && (
-              <>
-                <button onClick={shareToWhatsApp}
-                  style={{ width:'100%', padding:'13px', borderRadius:14, border:'1.5px solid #25D366', background:'#F0FFF4', color:'#1A7A36', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:'inherit', marginBottom:8, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
-                  <span style={{ fontSize:16 }}>💬</span>
-                  Share list on WhatsApp
-                </button>
-                <button onClick={openAllStores}
-                  style={{ width:'100%', padding:'13px', borderRadius:14, border:'1.5px solid var(--bd)', background:'var(--white)', color:'var(--ink)', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:'inherit', marginBottom:8 }}>
-                  Open all stores at once
-                </button>
-              </>
+              <button onClick={shareToWhatsApp}
+                style={{ width:'100%', padding:'13px', borderRadius:14, border:'1.5px solid #25D366', background:'#F0FFF4', color:'#1A7A36', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:'inherit', marginBottom:8, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+                <span style={{ fontSize:16 }}>💬</span>
+                Share list with family on WhatsApp
+              </button>
             )}
             <div style={{ fontSize:11, color:'var(--mu)', textAlign:'center', lineHeight:1.5 }}>
               Search links only. Your browser may block multi-tab popups — allow them if prompted.
             </div>
           </div>
 
-          {/* Share */}
-          <div style={{ marginTop:16, padding:'16px', background:'var(--white)', borderRadius:18, border:'1.5px solid var(--bd)', display:'flex', alignItems:'center', gap:14 }}>
-            <div style={{ width:44, height:44, borderRadius:12, background:'var(--beel)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>🛍️</div>
-            <div>
-              <div style={{ fontWeight:800, fontSize:15, color:'var(--ink)', marginBottom:2 }}>Share list with family</div>
-              <div style={{ fontSize:12, color:'var(--mu)' }}>Send to anyone — syncs live in v2.</div>
-            </div>
-          </div>
         </div>
       </div>
     );
@@ -2938,15 +2929,15 @@ export default function FridgeBee() {
             </div>
           </div>
 
-          {/* Most Wasted + Fridge Value */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
-            <div style={{ background:'var(--white)', borderRadius:18, border:'1.5px solid var(--bd)', padding:'16px' }}>
-              <div style={{ fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8 }}>MOST WASTED</div>
-              {mostWasted
-                ? <div style={{ fontSize:18, fontWeight:800, color:'#C94A3A', marginBottom:4 }}>{mostWasted}</div>
-                : <div style={{ width:28, height:4, background:'#C94A3A', borderRadius:2, marginBottom:8 }}/>}
-              <div style={{ fontSize:12, color:'var(--mu)' }}>{mostWasted ? `${mostWastedCount} item${mostWastedCount!==1?'s':''} thrown` : 'no waste yet'}</div>
-            </div>
+          {/* Most Wasted (only when there's real waste data) + Fridge Value */}
+          <div style={{ display:'grid', gridTemplateColumns: mostWasted ? '1fr 1fr' : '1fr', gap:10 }}>
+            {mostWasted && (
+              <div style={{ background:'var(--white)', borderRadius:18, border:'1.5px solid var(--bd)', padding:'16px' }}>
+                <div style={{ fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8 }}>MOST WASTED</div>
+                <div style={{ fontSize:18, fontWeight:800, color:'#C94A3A', marginBottom:4 }}>{mostWasted}</div>
+                <div style={{ fontSize:12, color:'var(--mu)' }}>{`${mostWastedCount} item${mostWastedCount!==1?'s':''} thrown`}</div>
+              </div>
+            )}
             <div style={{ background:'var(--white)', borderRadius:18, border:'1.5px solid var(--bd)', padding:'16px' }}>
               <div style={{ fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8 }}>FRIDGE VALUE</div>
               <div style={{ fontSize:26, fontWeight:800, color:'var(--ink)', lineHeight:1, marginBottom:4 }}>{currency}{fridgeValue.toFixed(0)}</div>
