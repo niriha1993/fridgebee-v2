@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
+import { priceForItem } from '../lib/prices';
 import type { Session, User } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
 
@@ -156,7 +157,12 @@ const ITEM_PRICES_USD: Record<string, number> = {
   'Mozzarella':4,'Feta':5,'Tortilla':2,'Pita':2.5,'Bun':1,'Hummus':3,
 };
 const FX: Record<string,number> = { US:1, IN:83, SG:1.35, GB:0.79, AU:1.53, MY:4.7, PK:280, AE:3.67 };
-function estimatePrice(name: string, country: string): number {
+// Local-currency price for an item. Tries the curated lookup first
+// (handles aliases + quantity scaling), then falls back to the legacy
+// USD × FX estimate so existing callers still get a number.
+function estimatePrice(name: string, country: string, quantity = 1, unit = 'pcs'): number {
+  const looked = priceForItem({ name, quantity, unit, country });
+  if (typeof looked === 'number' && looked > 0) return looked;
   const base = ITEM_PRICES_USD[name] ?? 2;
   const rate = FX[country] ?? 1;
   return parseFloat((base * rate).toFixed(2));
@@ -459,6 +465,43 @@ function emojiForName(name: string) {
   return NAME_EMOJI[key] || NAME_EMOJI[key.split(/\s+/)[0]] || '';
 }
 
+// Per-item expiry overrides where the category default is too generous.
+// Faster-spoiling produce / dairy gets shorter shelf life so the user is reminded.
+const ITEM_EXPIRY_DAYS: Record<string, number> = {
+  // Quick-spoil produce
+  spinach:3, methi:3, mint:3, coriander:4, lettuce:4, cilantro:4, dhania:4,
+  banana:5, mango:5, avocado:5, berries:4, blackberry:3, blackberries:3,
+  blueberry:5, blueberries:5, strawberry:4, strawberries:4, grapes:6, papaya:5,
+  // Standard produce
+  tomato:6, tomatoes:6, cucumber:6, broccoli:7, mushrooms:5, mushroom:5,
+  // Hardier produce
+  potato:30, onion:30, garlic:60, ginger:30, lemon:21, apple:14, carrot:14,
+  pumpkin:30, pineapple:5, lauki:6, bhindi:5, okra:5,
+  // Dairy
+  milk:5, yogurt:7, curd:7, paneer:7, cream:5,
+  cheese:21, mozzarella:14, feta:21,
+  butter:30, ghee:180,
+  eggs:21,
+  // Meats
+  chicken:3, fish:2, salmon:2, prawns:2, mutton:3, lamb:3, beef:3,
+  // Dry goods
+  rice:365, basmati:365, atta:180, maida:180, oats:180, pasta:365, noodles:365,
+  dal:365, lentils:365, chickpeas:365, rajma:365, chana:365, besan:180, sooji:180,
+  bread:5, jaggery:180, sugar:365, salt:365,
+};
+
+function expiryDaysForName(name: string, category: string): number {
+  const key = name.toLowerCase().trim();
+  if (ITEM_EXPIRY_DAYS[key] != null) return ITEM_EXPIRY_DAYS[key];
+  const firstWord = key.split(/\s+/)[0];
+  if (ITEM_EXPIRY_DAYS[firstWord] != null) return ITEM_EXPIRY_DAYS[firstWord];
+  // Substring match for compound names ("alphonso mango" → mango).
+  for (const [k, days] of Object.entries(ITEM_EXPIRY_DAYS)) {
+    if (key.includes(k)) return days;
+  }
+  return CATEGORY_EXPIRY[category] || 7;
+}
+
 function normalizeParsedItem(it: ParsedInputItem, country: string): Partial<FoodItem> {
   const rawName = (it.name || it.item_name || '').trim();
   const name = rawName
@@ -468,16 +511,18 @@ function normalizeParsedItem(it: ParsedInputItem, country: string): Partial<Food
   // If incoming emoji is missing or is the generic package, look it up by name first.
   const incoming = (it.emoji || '').trim();
   const emoji = (!incoming || incoming === '📦' || incoming === '🟨') ? (emojiForName(name) || '📦') : incoming;
+  const qty = it.qty ?? it.quantity ?? 1;
+  const unit = it.unit || 'pcs';
   return {
     name,
     emoji,
     shelf: it.shelf || 'fridge',
     category,
-    qty: it.qty ?? it.quantity ?? 1,
-    unit: it.unit || 'pcs',
-    expiry: it.expiry || daysFromNow(CATEGORY_EXPIRY[category] || 7),
+    qty,
+    unit,
+    expiry: it.expiry || daysFromNow(expiryDaysForName(name, category)),
     // 0 means "model couldn't read the price" — fall back to estimate. Only trust >0 prices.
-    cost: typeof it.price === 'number' && it.price > 0 ? it.price : estimatePrice(name, country),
+    cost: typeof it.price === 'number' && it.price > 0 ? it.price : estimatePrice(name, country, qty, unit),
   };
 }
 
