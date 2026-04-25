@@ -37,7 +37,7 @@ function expiryFromNow(days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-function normalizeItem(it: { item_name?: string; quantity?: number; unit?: string; category?: string; emoji?: string; }) {
+function normalizeItem(it: { item_name?: string; quantity?: number; unit?: string; category?: string; emoji?: string; price?: number; }) {
   const category = mapCategory(it.category);
   return {
     name: (it.item_name || '').trim(),
@@ -47,6 +47,9 @@ function normalizeItem(it: { item_name?: string; quantity?: number; unit?: strin
     emoji: it.emoji || '📦',
     shelf: guessShelf(category),
     expiry: expiryFromNow(expiryDaysFor(category)),
+    // CRITICAL: keep the printed price the model OCR'd from the receipt.
+    // Without this the client always fell through to estimatePrice ≈ $2.
+    price: typeof it.price === 'number' && it.price > 0 ? it.price : undefined,
   };
 }
 
@@ -252,10 +255,24 @@ export async function POST(req: NextRequest) {
 
     if (!items.length && (primaryError || retryError)) {
       const details = [primaryError, retryError].filter(Boolean).join(' | ');
-      return NextResponse.json({ error: details || 'Could not scan this image' }, { status: 422 });
+      return NextResponse.json({ error: details || 'Could not scan this image', primaryError, retryError }, { status: 422 });
     }
 
-    return NextResponse.json({ items, image_type: content.image_type || 'other' });
+    // Diagnostic — exposes which provider ran, what image type was classified,
+    // and how many items had real prices. Helpful when the user reports "scan
+    // gave me $2 for everything" — we can see whether the model returned 0s
+    // (and we fell back to estimate) or if it returned real numbers.
+    const itemsWithRealPrice = items.filter(i => typeof (i as { cost?: number; price?: number }).price === 'number' && ((i as { price?: number }).price ?? 0) > 0).length;
+    return NextResponse.json({
+      items,
+      image_type: content.image_type || 'other',
+      _debug: {
+        provider: ANTHROPIC_KEY ? 'claude-sonnet-4-6' : (OPENAI_KEY ? 'gpt-4o' : 'none'),
+        detectedKeys: { anthropic: !!ANTHROPIC_KEY, openai: !!OPENAI_KEY },
+        items_with_real_price: itemsWithRealPrice,
+        items_total: items.length,
+      },
+    });
   } catch (error) {
     console.error('Scan error:', error);
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Scan failed' }, { status: 500 });

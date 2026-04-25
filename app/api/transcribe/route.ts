@@ -199,7 +199,7 @@ function expiryFromNow(days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-function normalizeItem(it: { item_name?: string; quantity?: number; unit?: string; category?: string; emoji?: string; }) {
+function normalizeItem(it: { item_name?: string; quantity?: number; unit?: string; category?: string; emoji?: string; price?: number; }) {
   const category = mapCategory(it.category);
   return {
     name: (it.item_name || '').trim(),
@@ -209,6 +209,7 @@ function normalizeItem(it: { item_name?: string; quantity?: number; unit?: strin
     emoji: it.emoji || '📦',
     shelf: guessShelf(category),
     expiry: expiryFromNow(expiryDaysFor(category)),
+    price: typeof it.price === 'number' && it.price > 0 ? it.price : undefined,
   };
 }
 
