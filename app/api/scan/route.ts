@@ -146,7 +146,7 @@ async function runWithAnthropic(base64: string, mime: string, prompt: string) {
   const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 2000,
+    max_tokens: 1500,
     messages: [
       {
         role: 'user',

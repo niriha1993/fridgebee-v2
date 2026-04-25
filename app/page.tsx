@@ -223,7 +223,9 @@ async function normalizeScanImage(file: File) {
       img.src = imageUrl;
     });
 
-    const maxDimension = 1800;
+    // Smaller images upload + process noticeably faster on receipts.
+    // 1280px keeps small printed text readable while ~halving the bytes.
+    const maxDimension = 1280;
     const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
     const width = Math.max(1, Math.round(image.width * scale));
     const height = Math.max(1, Math.round(image.height * scale));
@@ -932,6 +934,7 @@ export default function FridgeBee() {
   const [cookConfirmed, setCookConfirmed] = useState(false);
   const [cookChoice, setCookChoice] = useState('');
   const [recipeScreen, setRecipeScreen] = useState<Meal|null>(null);
+  const [prefsBannerVisible, setPrefsBannerVisible] = useState(true);
   const [meals, setMeals] = useState<Meal[]>([]);
   const [plannedDays, setPlannedDays] = useState<PlannedDayMeals[]>([]);
   const [mealsLoading, setMealsLoading] = useState(false);
@@ -1146,6 +1149,14 @@ export default function FridgeBee() {
 
     return () => window.clearTimeout(timeout);
   }, [authUser, cloudReady, s]);
+
+  // Show 'Preferences applied' banner when meals tab opens, auto-hide after 4s.
+  useEffect(() => {
+    if (tab !== 'meals') return;
+    setPrefsBannerVisible(true);
+    const t = setTimeout(() => setPrefsBannerVisible(false), 4000);
+    return () => clearTimeout(t);
+  }, [tab]);
 
   // Fetch meals when meals tab is active
   useEffect(() => {
@@ -1412,7 +1423,7 @@ export default function FridgeBee() {
             fontSize:20, color:'#F5A623', lineHeight:1.5,
             marginBottom:16, fontWeight:400,
           }}>
-            &ldquo;Bought it Sunday.<br/>Forgot it by Thursday.&rdquo;
+            &ldquo;Bought it Sunday.<br/>Forgot it by Thursday?&rdquo;
           </p>
           <p style={{color:'rgba(255,255,255,0.65)', fontSize:14, lineHeight:1.6, maxWidth:260, margin:'0 auto 40px'}}>
             FridgeBee remembers what&apos;s in your fridge &mdash; and tells you what to cook before it goes bad.
@@ -2242,9 +2253,9 @@ export default function FridgeBee() {
               {mealsLoading ? 'Refreshing…' : 'Refresh'}
             </button>
           </div>
-          {/* Preferences banner */}
-          {hasPrefs && (
-            <div style={{ marginTop:10, display:'flex', alignItems:'flex-start', gap:8, background:'#F0FDF4', border:'1px solid #86EFAC', borderRadius:14, padding:'10px 12px' }}>
+          {/* Preferences banner — auto-hides 4s after the meals tab opens. */}
+          {hasPrefs && prefsBannerVisible && (
+            <div style={{ marginTop:10, display:'flex', alignItems:'flex-start', gap:8, background:'#F0FDF4', border:'1px solid #86EFAC', borderRadius:14, padding:'10px 12px', animation:'fadeIn .25s' }}>
               <span style={{ fontSize:16, flexShrink:0 }}>✅</span>
               <div style={{ fontSize:12, color:'#14532D', fontWeight:600, lineHeight:1.5 }}>
                 <strong>Preferences applied:</strong> {activePrefs.slice(0,4).join(' · ')}
