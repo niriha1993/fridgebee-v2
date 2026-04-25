@@ -249,7 +249,7 @@ const QUICK_BY_COUNTRY: Record<string, string[]> = {
 // Cuisine compass — broad regional groupings the user picks from in 1 tap.
 // Each maps to the recipe-pool cuisines it should pull from.
 const CUISINE_COMPASS: Array<{ id: string; emoji: string; label: string; pulls: string[] }> = [
-  { id: 'South Asian',   emoji: '🍛', label: 'South Asian',   pulls: ['indian'] },
+  { id: 'Indian',        emoji: '🍛', label: 'Indian',        pulls: ['indian'] },
   { id: 'Mediterranean', emoji: '🥘', label: 'Mediterranean', pulls: ['mediterranean','italian'] },
   { id: 'Western',       emoji: '🥩', label: 'Western',       pulls: ['american','italian'] },
   { id: 'East Asian',    emoji: '🍜', label: 'East Asian',    pulls: ['asian'] },
@@ -370,6 +370,12 @@ function sanitizeState(input: Partial<AppState> | null | undefined): AppState | 
 const NAME_EMOJI: Record<string, string> = {
   okra:'🥒', bhindi:'🥒', cucumber:'🥒', kheera:'🥒',
   pumpkin:'🎃', kaddu:'🎃',
+  methi:'🌿', fenugreek:'🌿', drumstick:'🌿', moringa:'🌿', sahjan:'🌿',
+  lauki:'🥒', dudhi:'🥒', 'bottle gourd':'🥒', karela:'🥒', 'bitter gourd':'🥒',
+  tinda:'🥒', tindora:'🥒', parwal:'🥒', turai:'🥒', 'ridge gourd':'🥒',
+  baingan:'🍆', brinjal:'🍆', eggplant:'🍆',
+  arbi:'🥔', taro:'🥔', shakarkandi:'🍠', 'sweet potato':'🍠',
+  amaranth:'🥬', cholai:'🥬', sarson:'🥬', bathua:'🥬', 'mustard greens':'🥬',
   cauliflower:'🥦', gobhi:'🥦', gobi:'🥦', broccoli:'🥦',
   cabbage:'🥬', spinach:'🥬', palak:'🥬', lettuce:'🥬',
   onion:'🧅', pyaaz:'🧅',
@@ -646,9 +652,14 @@ function buildFallbackMealsForDay(
     return { r, score, anchorHit };
   });
 
-  // Prefer recipes whose anchor is in the fridge. If at least 3 such, use only those.
+  // Hard requirement: the recipe's primary anchor MUST be in the fridge.
+  // No more "Mango Lassi" suggestions when the user has no mango.
+  // If the fridge is empty, fall back to anything in the slot pool so the user
+  // sees something rather than an empty screen.
   const anchorMatches = scored.filter(s => s.anchorHit);
-  const pickFrom = anchorMatches.length >= 3 ? anchorMatches : scored;
+  const pickFrom = anchorMatches.length > 0
+    ? anchorMatches
+    : (fridgeWords.size === 0 ? scored : []);
 
   // Sort: highest score first, stable hash tiebreak so output is deterministic per slot/day.
   pickFrom.sort((a, b) => {
@@ -1175,10 +1186,28 @@ export default function FridgeBee() {
   // ── Onboarding ──────────────────────────────────────────────────────────────
   function finishOB() {
     const today = new Date().toISOString().slice(0,10);
-    const items = obPicks.length > 0
-      ? QUICK_ITEMS.filter(it => obPicks.includes(it.name)).map(it => ({...it, id:uid(), added:today}))
-      : QUICK_ITEMS.slice(0,5).map(it => ({...it, id:uid(), added:today}));
-    up({ onboarded:true, items, country:detectCountry() });
+    const country = s.country || detectCountry();
+    const items = (obPicks.length > 0 ? obPicks : QUICK_ITEMS.slice(0,5).map(it => it.name)).map(name => {
+      const known = QUICK_ITEMS.find(it => it.name.toLowerCase() === name.toLowerCase());
+      if (known) return { ...known, id: uid(), added: today };
+      // Custom-typed item — guess emoji from NAME_EMOJI; default to Produce / fridge.
+      const lc = name.toLowerCase();
+      const emoji = NAME_EMOJI[lc] || NAME_EMOJI[lc.split(/\s+/)[0]] || '📦';
+      const category = 'Produce';
+      return {
+        id: uid(),
+        added: today,
+        name,
+        emoji,
+        shelf: 'fridge' as Shelf,
+        category,
+        qty: 1,
+        unit: 'pcs',
+        expiry: daysFromNow(CATEGORY_EXPIRY[category] || 7),
+        cost: estimatePrice(name, country),
+      };
+    });
+    up({ onboarded:true, items, country });
   }
 
   function OB() {
@@ -1228,21 +1257,20 @@ export default function FridgeBee() {
     const localItemNames = QUICK_BY_COUNTRY[obCountry] || QUICK_BY_COUNTRY.US;
     const localItems = localItemNames
       .map(n => QUICK_ITEMS.find(it => it.name === n))
-      .filter((x): x is Omit<FoodItem,'id'|'added'> => Boolean(x));
+      .filter((x): x is Omit<FoodItem,'id'|'added'> => Boolean(x))
+      .slice(0, 6);
     return (
       <div className="ob-wrap" style={{background:'var(--cr)'}}>
-        <div style={{padding:'24px 20px 12px', flexShrink:0}}>
-          <div style={{textAlign:'center', marginBottom:4, fontSize:28}}>🧊</div>
+        <div style={{padding:'20px 20px 8px', flexShrink:0}}>
           <h2 style={{
-            fontFamily:'Fraunces, Georgia, serif', fontSize:42, fontWeight:600,
-            color:'var(--ink)', textAlign:'center', lineHeight:1.15, marginBottom:8,
-            letterSpacing:'-0.5px',
+            fontFamily:'Fraunces, Georgia, serif', fontSize:28, fontWeight:600,
+            color:'var(--ink)', textAlign:'center', lineHeight:1.2, marginBottom:6,
+            letterSpacing:'-0.3px',
           }}>
-            What&apos;s in your fridge{' '}
-            <span style={{color:'var(--bee)', fontStyle:'italic'}}>right now?</span>
+            <span style={{color:'var(--bee)', fontStyle:'italic'}}>Smarter</span> meals start here.
           </h2>
-          <p style={{color:'var(--mu)', fontSize:13, textAlign:'center', lineHeight:1.5, marginBottom:14}}>
-            Pick 4&ndash;5 things you bought recently. We&apos;ll tell you what to cook.
+          <p style={{color:'var(--mu)', fontSize:12, textAlign:'center', lineHeight:1.5, marginBottom:10}}>
+            Tell us a few things and we&apos;ll tailor recipes for you.
           </p>
           <div style={{display:'flex', justifyContent:'center', gap:6}}>
             <div style={{width:24, height:5, borderRadius:3, background:'var(--bee)'}}/>
@@ -1250,7 +1278,7 @@ export default function FridgeBee() {
             <div style={{width:8,  height:5, borderRadius:3, background:'var(--bd)'}}/>
           </div>
         </div>
-        <div style={{flex:1, overflowY:'auto', padding:'12px 20px 8px'}}>
+        <div style={{flex:1, overflowY:'auto', padding:'14px 20px 8px'}}>
           {/* Diet preference row */}
           <div style={{fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8}}>
             DIET PREFERENCE
@@ -1261,7 +1289,7 @@ export default function FridgeBee() {
               return (
                 <button key={d}
                   onClick={() => {
-                    if (d === 'Other') return; // 'Other' is a marker — set in profile screen
+                    if (d === 'Other') return;
                     up({ dietaryFilters: on
                       ? s.dietaryFilters.filter(f => f !== d)
                       : [...s.dietaryFilters.filter(f => !['Vegan','Vegetarian'].includes(f) || f === d || (d !== 'Vegan' && d !== 'Vegetarian')), d]
@@ -1280,36 +1308,11 @@ export default function FridgeBee() {
             })}
           </div>
 
-          {/* 6 common items based on user location */}
-          <div style={{fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8}}>
-            COMMON IN {(COUNTRY_CURRENCY[obCountry]?.name || obCountry).toUpperCase()} — TAP TO ADD
-          </div>
-          <div style={{display:'flex', flexWrap:'wrap', gap:8, marginBottom:18}}>
-            {localItems.map(it => {
-              const sel = obPicks.includes(it.name);
-              return (
-                <button key={it.name}
-                  onClick={()=>setObPicks(prev => sel ? prev.filter(n=>n!==it.name) : [...prev, it.name])}
-                  style={{
-                    display:'flex', alignItems:'center', gap:6,
-                    padding:'9px 14px', borderRadius:12, border:'1.5px solid',
-                    fontSize:14, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
-                    transition:'all .12s',
-                    borderColor: sel ? 'var(--bee)' : 'var(--bd)',
-                    background:  sel ? 'var(--beel)' : 'var(--white)',
-                    color:       sel ? 'var(--beed)' : 'var(--ink)',
-                  }}>
-                  <span style={{fontSize:16}}>{it.emoji}</span>{it.name}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Cuisine compass */}
+          {/* Cuisine compass + custom cuisine input */}
           <div style={{fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8}}>
             CUISINE COMPASS
           </div>
-          <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:18}}>
+          <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:8}}>
             {CUISINE_COMPASS.map(c => {
               const on = s.cuisines.includes(c.id);
               return (
@@ -1328,31 +1331,67 @@ export default function FridgeBee() {
               );
             })}
           </div>
-
-          {/* More items (collapsible — but for now, show below compass) */}
-          <div style={{fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8}}>
-            MORE COMMON ITEMS
+          {/* Custom-cuisine pills + add input */}
+          <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:6}}>
+            {s.cuisines.filter(c => !CUISINE_COMPASS.find(x => x.id === c)).map(c => (
+              <span key={c} className="pill pill-bee" style={{cursor:'pointer', fontSize:12}}
+                onClick={()=>up({cuisines:s.cuisines.filter(x=>x!==c)})}>{c} ×</span>
+            ))}
           </div>
-          <div style={{display:'flex', flexWrap:'wrap', gap:8, marginBottom:8}}>
-            {QUICK_ITEMS.filter(it => !localItemNames.includes(it.name)).map(it => {
+          <input type="text"
+            placeholder="Add another cuisine and press Enter…"
+            value={s.customCuisine}
+            onChange={e=>up({customCuisine:e.target.value})}
+            onKeyDown={e=>{ if(e.key==='Enter' && s.customCuisine.trim()){ up({cuisines:[...s.cuisines, s.customCuisine.trim()], customCuisine:''}); }}}
+            style={{width:'100%', padding:'9px 12px', borderRadius:10, border:'1.5px solid var(--bd)', fontSize:13, fontFamily:'inherit', outline:'none', background:'var(--white)', marginBottom:18}}
+          />
+
+          {/* What's in your fridge right now? — 6 location items + free text */}
+          <div style={{fontSize:13, fontWeight:800, color:'var(--ink)', marginBottom:10, fontFamily:'Fraunces, Georgia, serif'}}>
+            What&apos;s in your fridge right now?
+          </div>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8, marginBottom:10}}>
+            {localItems.map(it => {
               const sel = obPicks.includes(it.name);
               return (
                 <button key={it.name}
                   onClick={()=>setObPicks(prev => sel ? prev.filter(n=>n!==it.name) : [...prev, it.name])}
                   style={{
-                    display:'flex', alignItems:'center', gap:6,
-                    padding:'9px 14px', borderRadius:12, border:'1.5px solid',
-                    fontSize:14, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+                    display:'flex', flexDirection:'column', alignItems:'center', gap:4,
+                    padding:'12px 6px', borderRadius:14, border:'1.5px solid',
+                    fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
                     transition:'all .12s',
                     borderColor: sel ? 'var(--bee)' : 'var(--bd)',
                     background:  sel ? 'var(--beel)' : 'var(--white)',
                     color:       sel ? 'var(--beed)' : 'var(--ink)',
                   }}>
-                  <span style={{fontSize:16}}>{it.emoji}</span>{it.name}
+                  <span style={{fontSize:24, lineHeight:1}}>{it.emoji}</span>
+                  {it.name}
                 </button>
               );
             })}
           </div>
+          {/* Custom-typed picks chips */}
+          <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:6}}>
+            {obPicks.filter(p => !QUICK_ITEMS.find(x => x.name === p)).map(p => (
+              <span key={p} className="pill pill-bee" style={{cursor:'pointer', fontSize:12}}
+                onClick={()=>setObPicks(prev=>prev.filter(n=>n!==p))}>{p} ×</span>
+            ))}
+          </div>
+          <input type="text"
+            placeholder="Type any item and press Enter (e.g. methi, tofu)…"
+            onKeyDown={e=>{
+              if (e.key==='Enter') {
+                const v = (e.target as HTMLInputElement).value.trim();
+                if (v) {
+                  const titled = v.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                  setObPicks(prev => prev.includes(titled) ? prev : [...prev, titled]);
+                  (e.target as HTMLInputElement).value = '';
+                }
+              }
+            }}
+            style={{width:'100%', padding:'9px 12px', borderRadius:10, border:'1.5px solid var(--bd)', fontSize:13, fontFamily:'inherit', outline:'none', background:'var(--white)', marginBottom:8}}
+          />
         </div>
         <div style={{
           flexShrink:0, padding:'12px 20px 28px',
@@ -1895,7 +1934,19 @@ export default function FridgeBee() {
                   ...day,
                   meals: day.meals.filter(meal => meal.name.toLowerCase() !== cookedName),
                 })));
-                const hero = expiring[0] || s.items[0];
+                // Pick a hero that's actually used in this recipe AND in the fridge — not just
+                // the first expiring item. Prevents "I cooked Pancakes" removing Bell Pepper.
+                const recipeWords = (recipeScreen.ingredients || [])
+                  .flatMap(ing => ing.toLowerCase().split(/[\s,/]+/))
+                  .filter(w => w.length >= 3);
+                const recipeWordSet = new Set(recipeWords);
+                const matchingItems = s.items.filter(item => {
+                  const itemName = item.name.toLowerCase();
+                  return recipeWordSet.has(itemName) || recipeWords.some(w => itemName.includes(w) || w.includes(itemName));
+                });
+                // Prefer the matching item that's expiring soonest. Fall back to nothing —
+                // better to skip the cook-done modal than ask about a wrong item.
+                const hero = matchingItems.sort((a, b) => daysUntil(a.expiry) - daysUntil(b.expiry))[0];
                 if (hero) setCookDoneItem(hero);
                 setRecipeScreen(null);
               }}

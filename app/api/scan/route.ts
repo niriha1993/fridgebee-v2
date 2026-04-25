@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
+import Anthropic from '@anthropic-ai/sdk';
 
 export const runtime = 'nodejs';
 
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || '';
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 
 function mapCategory(category?: string) {
@@ -57,104 +59,29 @@ function extractJsonObject(raw: string) {
   return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
 }
 
-function parseModelContent(value: unknown) {
-  if (typeof value === 'string') return extractJsonObject(value);
-  if (Array.isArray(value)) {
-    const joined = value
-      .map(part => {
-        if (typeof part === 'string') return part;
-        if (part && typeof part === 'object' && 'text' in part) return String(part.text ?? '');
-        return '';
-      })
-      .join('\n');
-    return extractJsonObject(joined);
-  }
-  if (value && typeof value === 'object') return value;
-  throw new Error('Scanner returned an empty response');
+function buildPrompt(currencyLabel: string, isReceiptRetry: boolean) {
+  if (isReceiptRetry) {
+    return `This is likely a grocery receipt or order screenshot.
+Read it like OCR and extract every FOOD or GROCERY line item you can find.
+
+Return JSON:
+{
+  "items": [
+    { "item_name": string, "quantity": number, "unit": string, "category": string, "emoji": string, "price": number }
+  ],
+  "image_type": "receipt"
 }
 
-async function runVisionPrompt(base64: string, mime: string, prompt: string) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENAI_KEY}`,
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o',
-      max_tokens: 1800,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}`, detail: 'high' } },
-            { type: 'text', text: prompt },
-          ],
-        },
-      ],
-    }),
-  });
+Rules:
+- Ignore totals, taxes, delivery, discounts, promos, and non-food items
+- If the receipt shows shorthand names, normalize them to clear shopper-friendly food names
+- If quantity is unclear, default to 1
+- Use prices printed on the receipt when visible in ${currencyLabel}
+- It is better to return many likely grocery items than to miss obvious receipt lines
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(errText || 'Scan request failed');
+Return ONLY the JSON object — no markdown, no commentary.`;
   }
-
-  const data = await response.json();
-  return parseModelContent(data.choices?.[0]?.message?.content ?? data.choices?.[0]?.message?.refusal ?? '');
-}
-
-async function runVisionPromptLoose(base64: string, mime: string, prompt: string) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENAI_KEY}`,
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o',
-      max_tokens: 1800,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}`, detail: 'auto' } },
-            { type: 'text', text: prompt },
-          ],
-        },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(errText || 'Scan request failed');
-  }
-
-  const data = await response.json();
-  return parseModelContent(data.choices?.[0]?.message?.content ?? data.choices?.[0]?.message?.refusal ?? '');
-}
-
-export async function POST(req: NextRequest) {
-  try {
-    const formData = await req.formData();
-    const image = (formData.get('image') as File | null) || (formData.get('file') as File | null);
-    const dietary = JSON.parse((formData.get('dietary') as string) ?? '{}');
-    const country = (dietary.country ?? 'IN') as 'IN'|'SG'|'US';
-    const currencyLabel = country === 'SG' ? 'SGD' : country === 'US' ? 'USD' : 'INR';
-    if (!image) return NextResponse.json({ error: 'No image provided' }, { status: 400 });
-    if (!OPENAI_KEY) return NextResponse.json({ error: 'OPENAI_API_KEY is not configured' }, { status: 500 });
-
-    const bytes = await image.arrayBuffer();
-    if (!bytes.byteLength) return NextResponse.json({ error: 'Uploaded image is empty' }, { status: 400 });
-    const base64 = Buffer.from(bytes).toString('base64');
-    const mime = image.type || 'image/jpeg';
-    if (mime === 'image/heic' || mime === 'image/heif') {
-      return NextResponse.json({ error: 'Please upload a JPG or PNG copy of this photo' }, { status: 400 });
-    }
-
-    const primaryPrompt = `You are a smart grocery scanner for a fridge inventory app. Identify ALL food and grocery items in this image.
+  return `You are a smart grocery scanner for a fridge inventory app. Identify ALL food and grocery items in this image.
 
 This image could be:
 - A receipt or order confirmation — extract every line item
@@ -183,49 +110,119 @@ Rules:
 - category: "Produce" | "Dairy" | "Protein" | "Grains" | "Snacks" | "Beverages" | "Condiments" | "Frozen" | "Other"
 - emoji: one relevant emoji
 - If this is a receipt or grocery screenshot, use the actual printed item price in ${currencyLabel} when possible.
-Skip delivery fees, totals, promotions, and non-food items`;
+Skip delivery fees, totals, promotions, and non-food items.
 
-    const receiptRetryPrompt = `This is likely a grocery receipt or order screenshot.
-Read it like OCR and extract every FOOD or GROCERY line item you can find.
-
-Return JSON:
-{
-  "items": [
-    { "item_name": string, "quantity": number, "unit": string, "category": string, "emoji": string, "price": number }
-  ],
-  "image_type": "receipt"
+Return ONLY the JSON object — no markdown, no commentary.`;
 }
 
-Rules:
-- Ignore totals, taxes, delivery, discounts, promos, and non-food items
-- If the receipt shows shorthand names, normalize them to clear shopper-friendly food names
-- If quantity is unclear, default to 1
-- Use prices printed on the receipt when visible in ${currencyLabel}
-- It is better to return many likely grocery items than to miss obvious receipt lines`;
+async function runWithAnthropic(base64: string, mime: string, prompt: string) {
+  // Anthropic Messages API supports image input. Cast mime to the SDK union.
+  const supported = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+  const mediaType = supported.includes(mime) ? mime : 'image/jpeg';
+  const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
+  const response = await client.messages.create({
+    model: 'claude-haiku-4-5',
+    max_tokens: 1800,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: base64 },
+          },
+          { type: 'text', text: prompt },
+        ],
+      },
+    ],
+  });
+  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+  const raw = textBlock?.text ?? '';
+  if (!raw) throw new Error('Scanner returned an empty response');
+  return extractJsonObject(raw);
+}
 
-    let content: { items?: unknown[]; image_type?: string };
+async function runWithOpenAI(base64: string, mime: string, prompt: string, useJsonMode = true) {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      max_tokens: 1800,
+      ...(useJsonMode ? { response_format: { type: 'json_object' } } : {}),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}`, detail: useJsonMode ? 'high' : 'auto' } },
+            { type: 'text', text: prompt },
+          ],
+        },
+      ],
+    }),
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(errText || 'Scan request failed');
+  }
+  const data = await response.json();
+  const raw = data.choices?.[0]?.message?.content ?? data.choices?.[0]?.message?.refusal ?? '';
+  if (!raw) throw new Error('Scanner returned an empty response');
+  return extractJsonObject(raw);
+}
+
+async function runVisionPrompt(base64: string, mime: string, prompt: string, isReceiptRetry: boolean) {
+  // Try Anthropic first if available; fall back to OpenAI.
+  if (ANTHROPIC_KEY) {
+    try {
+      return await runWithAnthropic(base64, mime, prompt);
+    } catch (e) {
+      // If Anthropic fails (quota, parse error, network), fall through to OpenAI.
+      if (!OPENAI_KEY) throw e;
+    }
+  }
+  if (OPENAI_KEY) {
+    return await runWithOpenAI(base64, mime, prompt, !isReceiptRetry);
+  }
+  throw new Error('Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is configured.');
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const formData = await req.formData();
+    const image = (formData.get('image') as File | null) || (formData.get('file') as File | null);
+    const dietary = JSON.parse((formData.get('dietary') as string) ?? '{}');
+    const country = (dietary.country ?? 'IN') as 'IN'|'SG'|'US';
+    const currencyLabel = country === 'SG' ? 'SGD' : country === 'US' ? 'USD' : 'INR';
+    if (!image) return NextResponse.json({ error: 'No image provided' }, { status: 400 });
+    if (!ANTHROPIC_KEY && !OPENAI_KEY) {
+      return NextResponse.json({ error: 'AI vision is offline — set ANTHROPIC_API_KEY or OPENAI_API_KEY in Vercel project settings.' }, { status: 500 });
+    }
+
+    const bytes = await image.arrayBuffer();
+    if (!bytes.byteLength) return NextResponse.json({ error: 'Uploaded image is empty' }, { status: 400 });
+    const base64 = Buffer.from(bytes).toString('base64');
+    const mime = image.type || 'image/jpeg';
+    if (mime === 'image/heic' || mime === 'image/heif') {
+      return NextResponse.json({ error: 'Please upload a JPG or PNG copy of this photo' }, { status: 400 });
+    }
+
+    let content: { items?: unknown[]; image_type?: string } = { items: [], image_type: 'other' };
     let items: Array<{ name: string } & Record<string, unknown>> = [];
     const rawItems = (value: unknown) => Array.isArray(value) ? value as Array<{ item_name?: string; quantity?: number; unit?: string; category?: string; emoji?: string; }> : [];
     let primaryError = '';
     let retryError = '';
 
     try {
-      content = await runVisionPrompt(base64, mime, primaryPrompt);
+      content = await runVisionPrompt(base64, mime, buildPrompt(currencyLabel, false), false);
       items = rawItems(content.items).map(normalizeItem).filter((item: { name: string }) => item.name);
     } catch (error) {
       primaryError = error instanceof Error ? error.message : 'Primary scan failed';
-      content = { items: [], image_type: 'other' };
     }
 
     if (!items.length) {
       try {
-        content = await runVisionPromptLoose(
-          base64,
-          mime,
-          `${receiptRetryPrompt}
-
-Return only JSON. No explanation, no markdown.`
-        );
+        content = await runVisionPrompt(base64, mime, buildPrompt(currencyLabel, true), true);
         items = rawItems(content.items).map(normalizeItem).filter((item: { name: string }) => item.name);
       } catch (error) {
         retryError = error instanceof Error ? error.message : 'Receipt retry failed';

@@ -67,6 +67,36 @@ const KNOWN_ITEMS: Array<{ alias: string; canonical: string; qty: number; unit: 
   { alias: 'corn', canonical: 'Corn', qty: 2, unit: 'pcs', category: 'Produce', emoji: '🌽' },
   { alias: 'mushroom', canonical: 'Mushrooms', qty: 200, unit: 'g', category: 'Produce', emoji: '🍄' },
   { alias: 'mushrooms', canonical: 'Mushrooms', qty: 200, unit: 'g', category: 'Produce', emoji: '🍄' },
+  // Indian / South Asian veg
+  { alias: 'methi', canonical: 'Methi', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🌿' },
+  { alias: 'fenugreek', canonical: 'Methi', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🌿' },
+  { alias: 'lauki', canonical: 'Lauki', qty: 1, unit: 'pcs', category: 'Produce', emoji: '🥒' },
+  { alias: 'dudhi', canonical: 'Lauki', qty: 1, unit: 'pcs', category: 'Produce', emoji: '🥒' },
+  { alias: 'bottle gourd', canonical: 'Lauki', qty: 1, unit: 'pcs', category: 'Produce', emoji: '🥒' },
+  { alias: 'karela', canonical: 'Karela', qty: 250, unit: 'g', category: 'Produce', emoji: '🥒' },
+  { alias: 'bitter gourd', canonical: 'Karela', qty: 250, unit: 'g', category: 'Produce', emoji: '🥒' },
+  { alias: 'tinda', canonical: 'Tinda', qty: 500, unit: 'g', category: 'Produce', emoji: '🥒' },
+  { alias: 'tindora', canonical: 'Tindora', qty: 250, unit: 'g', category: 'Produce', emoji: '🥒' },
+  { alias: 'parwal', canonical: 'Parwal', qty: 250, unit: 'g', category: 'Produce', emoji: '🥒' },
+  { alias: 'baingan', canonical: 'Baingan', qty: 500, unit: 'g', category: 'Produce', emoji: '🍆' },
+  { alias: 'brinjal', canonical: 'Brinjal', qty: 500, unit: 'g', category: 'Produce', emoji: '🍆' },
+  { alias: 'eggplant', canonical: 'Eggplant', qty: 500, unit: 'g', category: 'Produce', emoji: '🍆' },
+  { alias: 'arbi', canonical: 'Arbi', qty: 500, unit: 'g', category: 'Produce', emoji: '🥔' },
+  { alias: 'taro', canonical: 'Taro', qty: 500, unit: 'g', category: 'Produce', emoji: '🥔' },
+  { alias: 'shakarkandi', canonical: 'Sweet potato', qty: 500, unit: 'g', category: 'Produce', emoji: '🍠' },
+  { alias: 'sweet potato', canonical: 'Sweet potato', qty: 500, unit: 'g', category: 'Produce', emoji: '🍠' },
+  { alias: 'drumstick', canonical: 'Drumstick', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🌿' },
+  { alias: 'moringa', canonical: 'Drumstick', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🌿' },
+  { alias: 'sahjan', canonical: 'Drumstick', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🌿' },
+  { alias: 'tinda', canonical: 'Tinda', qty: 500, unit: 'g', category: 'Produce', emoji: '🥒' },
+  { alias: 'kachri', canonical: 'Kachri', qty: 250, unit: 'g', category: 'Produce', emoji: '🥒' },
+  { alias: 'amaranth', canonical: 'Amaranth', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🥬' },
+  { alias: 'cholai', canonical: 'Amaranth', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🥬' },
+  { alias: 'sarson', canonical: 'Mustard greens', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🥬' },
+  { alias: 'bathua', canonical: 'Bathua', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🥬' },
+  { alias: 'kaddu', canonical: 'Pumpkin', qty: 1, unit: 'kg', category: 'Produce', emoji: '🎃' },
+  { alias: 'turai', canonical: 'Turai', qty: 500, unit: 'g', category: 'Produce', emoji: '🥒' },
+  { alias: 'ridge gourd', canonical: 'Turai', qty: 500, unit: 'g', category: 'Produce', emoji: '🥒' },
   // Dairy
   { alias: 'milk', canonical: 'Milk', qty: 1, unit: 'L', category: 'Dairy', emoji: '🥛' },
   { alias: 'doodh', canonical: 'Milk', qty: 1, unit: 'L', category: 'Dairy', emoji: '🥛' },
@@ -111,6 +141,28 @@ const KNOWN_ITEMS: Array<{ alias: string; canonical: string; qty: number; unit: 
   { alias: 'rajma', canonical: 'Rajma', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
   { alias: 'chickpeas', canonical: 'Chickpeas', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
   { alias: 'chana', canonical: 'Chickpeas', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
+  { alias: 'chole', canonical: 'Chole', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
+  { alias: 'kabuli chana', canonical: 'Chole', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
+  { alias: 'urad', canonical: 'Urad dal', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
+  { alias: 'urad dal', canonical: 'Urad dal', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
+  { alias: 'moong', canonical: 'Moong dal', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
+  { alias: 'moong dal', canonical: 'Moong dal', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
+  { alias: 'masoor', canonical: 'Masoor dal', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
+  { alias: 'toor', canonical: 'Toor dal', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
+  { alias: 'toor dal', canonical: 'Toor dal', qty: 500, unit: 'g', category: 'Grains', emoji: '🫘' },
+  { alias: 'atta', canonical: 'Atta', qty: 1, unit: 'kg', category: 'Grains', emoji: '🌾' },
+  { alias: 'maida', canonical: 'Maida', qty: 1, unit: 'kg', category: 'Grains', emoji: '🌾' },
+  { alias: 'besan', canonical: 'Besan', qty: 500, unit: 'g', category: 'Grains', emoji: '🌾' },
+  { alias: 'sooji', canonical: 'Sooji', qty: 500, unit: 'g', category: 'Grains', emoji: '🌾' },
+  { alias: 'rava', canonical: 'Sooji', qty: 500, unit: 'g', category: 'Grains', emoji: '🌾' },
+  { alias: 'poha', canonical: 'Poha', qty: 500, unit: 'g', category: 'Grains', emoji: '🌾' },
+  { alias: 'idli rava', canonical: 'Idli rava', qty: 500, unit: 'g', category: 'Grains', emoji: '🌾' },
+  { alias: 'jaggery', canonical: 'Jaggery', qty: 500, unit: 'g', category: 'Condiments', emoji: '🍯' },
+  { alias: 'gur', canonical: 'Jaggery', qty: 500, unit: 'g', category: 'Condiments', emoji: '🍯' },
+  { alias: 'green chilli', canonical: 'Green chilli', qty: 100, unit: 'g', category: 'Produce', emoji: '🌶️' },
+  { alias: 'hari mirch', canonical: 'Green chilli', qty: 100, unit: 'g', category: 'Produce', emoji: '🌶️' },
+  { alias: 'curry leaves', canonical: 'Curry leaves', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🌿' },
+  { alias: 'kadi patta', canonical: 'Curry leaves', qty: 1, unit: 'bunch', category: 'Produce', emoji: '🌿' },
   { alias: 'tortilla', canonical: 'Tortilla', qty: 8, unit: 'pcs', category: 'Grains', emoji: '🫓' },
   { alias: 'pita', canonical: 'Pita', qty: 4, unit: 'pcs', category: 'Grains', emoji: '🫓' },
 ];
@@ -259,9 +311,19 @@ export async function POST(req: NextRequest) {
     if (!transcript) return NextResponse.json({ items: [], transcript: '' });
 
     const directItems = directKnownItemsFromText(transcript);
-    // If we have at least 2 direct matches, trust them outright — saves a model call and quota.
+    // If we have at least 2 direct matches, also include any unrecognised whitespace-separated
+    // tokens as "Other" items. Saves a model call AND preserves words like "chole" that aren't
+    // yet in the dictionary.
     if (directItems.length >= 2) {
-      return NextResponse.json({ items: directItems, transcript });
+      const matched = new Set(directItems.map(i => i.name.toLowerCase()));
+      const matchedAliases = new Set<string>();
+      const cleanedText = transcript.toLowerCase();
+      for (const item of KNOWN_ITEMS) {
+        if (new RegExp(`\\b${item.alias}\\b`, 'i').test(cleanedText)) matchedAliases.add(item.alias);
+      }
+      const extras = whitespaceFallbackItems(transcript)
+        .filter(w => !matched.has(w.name.toLowerCase()) && !matchedAliases.has(w.name.toLowerCase()));
+      return NextResponse.json({ items: [...directItems, ...extras], transcript });
     }
 
     const completion = await fetch('https://api.openai.com/v1/chat/completions', {
