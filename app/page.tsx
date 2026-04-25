@@ -1440,7 +1440,7 @@ export default function FridgeBee() {
             fontSize:20, color:'#F5A623', lineHeight:1.5,
             marginBottom:16, fontWeight:400,
           }}>
-            &ldquo;Bought it Sunday.<br/>Forgot it by Thursday?&rdquo;
+            Bought it Sunday.<br/>Forgot it by Thursday?
           </p>
           <p style={{color:'rgba(255,255,255,0.65)', fontSize:14, lineHeight:1.6, maxWidth:260, margin:'0 auto 40px'}}>
             FridgeBee remembers what&apos;s in your fridge &mdash; and tells you what to cook before it goes bad.
