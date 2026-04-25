@@ -346,6 +346,28 @@ Rules:
 - NEVER return quantity words as their own items. "1 dozen anda" → ONE item: Eggs (qty 12, unit pcs). Words like "dozen", "kg", "gram", "litre", "pack", "packet", "bunch", "loaf" are ALWAYS quantity qualifiers, never groceries.
 - ALWAYS prefer the user-stated quantity over defaults. "500g methi" → Methi qty 500 unit g, NOT the default 1 bunch.
 - Ignore filler words like "bought", "got", "picked up", "some", "aur", "y", "und", "lah", "can".
+
+PHONETIC MISHEAR RECOVERY — voice transcription often garbles regional names. Treat these as the obvious South Asian groceries:
+- "patta" / "patta gobi" / "Patak" / "pat tank" → Patta Gobhi (Cabbage)
+- "lucky" / "lokey" / "lo key" / "lock he" → Lauki (Bottle Gourd)
+- "bindi" / "bin de" / "bandhi" → Bhindi (Okra)
+- "gautam buddy" / "gotham booty" / "kothmir" / "cotton body" / "kothambari" / "kotha mari" → Kothmir / Coriander
+- "math he" / "metty" / "methe" / "matt he" → Methi (Fenugreek)
+- "ka rare la" / "carla" / "carrera" / "karaoke" → Karela (Bitter Gourd)
+- "din da" / "din duh" → Tinda
+- "arbi" / "arbie" / "arby" → Arbi (Taro)
+- "die kun" / "dye con" → Daikon
+- "bang gun" / "bayonne" / "begin" / "bay gun" → Baingan (Eggplant)
+- "to ray" / "to rear" → Turai (Ridge Gourd)
+- "by gun" → Baingan
+- "tomatoe" / "tom matter" / "the matter" → Tomato
+- "dough" / "though" → Dahi (Yogurt) when context is dairy
+- "purr knee r" / "punner" / "pun ear" → Paneer
+- "ah loo" / "alou" → Aloo (Potato)
+- "Charlotte" → Atta or Aata (Wheat Flour) when context is grain
+- "garlic / lessen" → Lehsun (Garlic)
+- "added rack" / "ad rack" → Adrak (Ginger)
+If a transcribed token doesn't match an English grocery word but plausibly sounds like a known South Asian / South-East Asian / Tamil / Malay item, USE THE GROCERY NAME, not the literal mishear. Drop unrecognisable garbage tokens entirely rather than including them.
 - The user may mix languages or local dialects — still extract the groceries correctly.
 
 Infer practical household defaults when quantity is missing:

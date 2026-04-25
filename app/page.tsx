@@ -1715,39 +1715,10 @@ export default function FridgeBee() {
       return;
     }
 
-    // Prefer the browser's built-in SpeechRecognition where available — it's free,
-    // doesn't burn OpenAI Whisper quota, and works well on Chrome desktop / Android.
-    // iOS Safari has no SR support, so we fall through to MediaRecorder + Whisper there.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SR) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rec: any = new SR();
-      srRef.current = rec;
-      rec.lang = typeof navigator !== 'undefined' ? (navigator.language || 'en-IN') : 'en-IN';
-      rec.interimResults = false;
-      rec.continuous = false;
-      setIsListening(true);
-      rec.onresult = async (e: { results: { 0: { 0: { transcript: string } } } }) => {
-        const transcript = e.results[0][0].transcript.trim();
-        setVoiceText(transcript);
-        setIsListening(false);
-        await parseVoice(transcript);
-      };
-      rec.onerror = (e: { error?: string }) => {
-        setIsListening(false);
-        // Common SR errors: 'not-allowed' (permission), 'network', 'no-speech'.
-        // Surface useful messages, then fall through to Whisper for retry on next tap.
-        const msg = e?.error === 'not-allowed' ? 'Microphone access needed'
-                  : e?.error === 'no-speech'   ? "Couldn't hear anything — try again"
-                  : 'Could not hear — try again';
-        showT(msg);
-      };
-      rec.onend = () => setIsListening(false);
-      try { rec.start(); return; } catch { /* fall through to MediaRecorder */ }
-    }
-
-    // Fallback: capture audio and send to Whisper. Required on iOS Safari.
+    // Prefer MediaRecorder + Whisper FIRST. Whisper handles Hindi/Tamil/Malay/
+    // mixed-language speech far better than browser SpeechRecognition, which
+    // mishears regional words ("lauki" → "lucky", "bhindi" → "bindi"). SR is
+    // only the fallback for when MediaRecorder isn't available (rare).
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
@@ -1769,6 +1740,33 @@ export default function FridgeBee() {
       recorder.start(250);
       return;
     } catch {
+      // MediaRecorder unavailable (rare). Fall back to browser SR.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SR) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const rec: any = new SR();
+        srRef.current = rec;
+        rec.lang = typeof navigator !== 'undefined' ? (navigator.language || 'en-IN') : 'en-IN';
+        rec.interimResults = false;
+        rec.continuous = false;
+        setIsListening(true);
+        rec.onresult = async (e: { results: { 0: { 0: { transcript: string } } } }) => {
+          const transcript = e.results[0][0].transcript.trim();
+          setVoiceText(transcript);
+          setIsListening(false);
+          await parseVoice(transcript);
+        };
+        rec.onerror = (e: { error?: string }) => {
+          setIsListening(false);
+          const msg = e?.error === 'not-allowed' ? 'Microphone access needed'
+                    : e?.error === 'no-speech'   ? "Couldn't hear anything — try again"
+                    : 'Could not hear — try again';
+          showT(msg);
+        };
+        rec.onend = () => setIsListening(false);
+        try { rec.start(); return; } catch { /* fall through */ }
+      }
       setIsListening(false);
       showT('Microphone access needed');
     }
