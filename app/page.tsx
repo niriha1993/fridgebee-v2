@@ -2050,7 +2050,7 @@ export default function FridgeBee() {
       setPlannedDays(prev => prev.map(day => ({ ...day, meals: day.meals.filter(m => m.name.toLowerCase() !== lower) })));
       showT(`"${recipeName}" hidden — won’t suggest again`);
     };
-    const refreshMeals = () => {
+    const refreshMeals = async () => {
       const mealMembers = [
         ...(s.name || s.dietaryFilters.length || s.allergies.length ? [{
           name: s.name || 'You',
@@ -2068,21 +2068,47 @@ export default function FridgeBee() {
           dislikes: m.dislikes,
         })),
       ];
+      // Bust the dedup so even meals already cached/cooked can come back through
+      // — refresh should feel like a real reset.
+      const exclude = Array.from(new Set([
+        ...Array.from(hiddenMealNames),
+        ...s.dislikedRecipes.map(n => n.toLowerCase()),
+      ]));
       setMealsLoading(true);
-      fetch('/api/meals', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: s.items,
-          cuisines: s.cuisines,
-          members: mealMembers,
-          mealType: mealPeriod,
-          excludeMeals: Array.from(hiddenMealNames),
-        }),
-      })
-        .then(r => r.ok ? r.json() : { meals: [] })
-        .then(d => setMeals(d.meals || []))
-        .finally(() => setMealsLoading(false));
+      try {
+        if (mealsViewMode === 'days') {
+          const nextPlan: PlannedDayMeals[] = [];
+          const rolling = new Set(exclude);
+          for (const meta of dayPlanMeta()) {
+            const r = await fetch('/api/meals', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                items: s.items, cuisines: s.cuisines, members: mealMembers,
+                mealType: mealPeriod, excludeMeals: Array.from(rolling),
+                count: 2, planningDay: meta.label, dayOffset: meta.dayOffset,
+              }),
+            });
+            const data = r.ok ? await r.json() : { meals: [] };
+            const dayMeals = (data.meals || []).filter((m: Meal) => !rolling.has(m.name.toLowerCase()));
+            dayMeals.forEach((m: Meal) => rolling.add(m.name.toLowerCase()));
+            nextPlan.push({ id: meta.id, label: meta.label, subtitle: meta.subtitle, meals: dayMeals });
+          }
+          setPlannedDays(nextPlan);
+        } else {
+          const r = await fetch('/api/meals', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              items: s.items, cuisines: s.cuisines, members: mealMembers,
+              mealType: mealPeriod, excludeMeals: exclude,
+            }),
+          });
+          const data = r.ok ? await r.json() : { meals: [] };
+          setMeals(data.meals || []);
+        }
+        showT('Refreshed ✓');
+      } finally {
+        setMealsLoading(false);
+      }
     };
 
     if (recipeScreen) {
@@ -2209,9 +2235,11 @@ export default function FridgeBee() {
             </div>
             <button
               onClick={refreshMeals}
-              style={{ display:'flex', alignItems:'center', gap:8, background:'#FFF5F0', border:'1.5px solid #F4C8C1', borderRadius:16, padding:'10px 14px', cursor:'pointer', fontFamily:'inherit', color:'#C94A3A', fontWeight:700, fontSize:14 }}
+              disabled={mealsLoading}
+              style={{ display:'flex', alignItems:'center', gap:8, background: mealsLoading ? '#FCEAE5' : '#FFF5F0', border:'1.5px solid #F4C8C1', borderRadius:16, padding:'10px 14px', cursor: mealsLoading ? 'wait' : 'pointer', fontFamily:'inherit', color:'#C94A3A', fontWeight:700, fontSize:14, opacity: mealsLoading ? 0.7 : 1 }}
             >
-              ↻ Refresh
+              <span style={{ display:'inline-block', animation: mealsLoading ? 'spin 1s linear infinite' : 'none', transformOrigin:'50% 50%' }}>↻</span>
+              {mealsLoading ? 'Refreshing…' : 'Refresh'}
             </button>
           </div>
           {/* Preferences banner */}
