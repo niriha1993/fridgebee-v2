@@ -1468,23 +1468,38 @@ export default function FridgeBee() {
               );
             })}
           </div>
-          {/* Custom-typed picks chips */}
-          <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:6}}>
-            {obPicks.filter(p => !QUICK_ITEMS.find(x => x.name === p)).map(p => (
-              <span key={p} className="pill pill-bee" style={{cursor:'pointer', fontSize:12}}
-                onClick={()=>setObPicks(prev=>prev.filter(n=>n!==p))}>{p} ×</span>
-            ))}
-          </div>
+          {/* Selected items (typed or grid-tapped) — visible feedback */}
+          {obPicks.length > 0 && (
+            <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:8}}>
+              <span style={{fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.6px', alignSelf:'center'}}>{obPicks.length} SELECTED:</span>
+              {obPicks.map(p => {
+                const known = QUICK_ITEMS.find(x => x.name.toLowerCase() === p.toLowerCase());
+                return (
+                  <span key={p} className="pill pill-bee" style={{cursor:'pointer', fontSize:12}}
+                    onClick={()=>setObPicks(prev=>prev.filter(n=>n!==p))}>
+                    {known?.emoji || NAME_EMOJI[p.toLowerCase()] || ''} {p} ×
+                  </span>
+                );
+              })}
+            </div>
+          )}
           <input type="text"
-            placeholder="Type"
+            placeholder="Type item name and press Enter (e.g. methi, tofu)"
             onKeyDown={e=>{
               if (e.key==='Enter') {
-                const v = (e.target as HTMLInputElement).value.trim();
-                if (v) {
-                  const titled = v.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-                  setObPicks(prev => prev.includes(titled) ? prev : [...prev, titled]);
-                  (e.target as HTMLInputElement).value = '';
-                }
+                e.preventDefault();
+                const raw = (e.target as HTMLInputElement).value.trim();
+                if (!raw) return;
+                // Allow comma/space separated input — split into multiple picks at once.
+                const parts = raw.split(/[,;]+|\s+and\s+|\s+/).map(p => p.trim()).filter(Boolean);
+                const titled = parts.map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase());
+                setObPicks(prev => {
+                  const next = [...prev];
+                  for (const t of titled) if (!next.includes(t)) next.push(t);
+                  return next;
+                });
+                (e.target as HTMLInputElement).value = '';
+                showT(titled.length === 1 ? `Added "${titled[0]}"` : `Added ${titled.length} items`);
               }
             }}
             style={{width:'100%', padding:'9px 12px', borderRadius:10, border:'1.5px solid var(--bd)', fontSize:13, fontFamily:'inherit', outline:'none', background:'var(--white)', marginBottom:8}}
@@ -1543,7 +1558,9 @@ export default function FridgeBee() {
     const cntAfter = addCount + list.length;
     setAddCount(cntAfter);
     localStorage.setItem('fb_add_cnt', String(cntAfter));
-    if (cntAfter > 30) { setShowPaywall(true); return; }
+    // Soft Pro upsell after the user has added a lot of items — opens the Kafe
+    // checkout in a new tab but still adds the items so the flow isn't blocked.
+    // (The old behaviour was to hard-stop adds at >30 which broke the experience.)
     const today = new Date().toISOString().slice(0,10);
     const stamped: FoodItem[] = list.map(it => ({ ...it, id: uid(), added: today }));
     setS(prev => ({ ...prev, items: [...prev.items, ...stamped] }));
@@ -1574,10 +1591,42 @@ export default function FridgeBee() {
       return;
     }
 
+    // Prefer the browser's built-in SpeechRecognition where available — it's free,
+    // doesn't burn OpenAI Whisper quota, and works well on Chrome desktop / Android.
+    // iOS Safari has no SR support, so we fall through to MediaRecorder + Whisper there.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SR) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rec: any = new SR();
+      srRef.current = rec;
+      rec.lang = typeof navigator !== 'undefined' ? (navigator.language || 'en-IN') : 'en-IN';
+      rec.interimResults = false;
+      rec.continuous = false;
+      setIsListening(true);
+      rec.onresult = async (e: { results: { 0: { 0: { transcript: string } } } }) => {
+        const transcript = e.results[0][0].transcript.trim();
+        setVoiceText(transcript);
+        setIsListening(false);
+        await parseVoice(transcript);
+      };
+      rec.onerror = (e: { error?: string }) => {
+        setIsListening(false);
+        // Common SR errors: 'not-allowed' (permission), 'network', 'no-speech'.
+        // Surface useful messages, then fall through to Whisper for retry on next tap.
+        const msg = e?.error === 'not-allowed' ? 'Microphone access needed'
+                  : e?.error === 'no-speech'   ? "Couldn't hear anything — try again"
+                  : 'Could not hear — try again';
+        showT(msg);
+      };
+      rec.onend = () => setIsListening(false);
+      try { rec.start(); return; } catch { /* fall through to MediaRecorder */ }
+    }
+
+    // Fallback: capture audio and send to Whisper. Required on iOS Safari.
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
-      // Detect best supported MIME type (iOS needs mp4, others prefer webm)
       const MIME_PRIORITY = ['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus',''];
       const chosenMime = MIME_PRIORITY.find(m => !m || MediaRecorder.isTypeSupported(m)) ?? '';
       const recorder = new MediaRecorder(stream, chosenMime ? { mimeType: chosenMime } : {});
@@ -1593,34 +1642,9 @@ export default function FridgeBee() {
         if (blob.size < 500) { showT('Recording too short — try again'); return; }
         await parseVoice('', blob);
       };
-      recorder.start(250); // timeslice ensures ondataavailable fires on iOS
+      recorder.start(250);
       return;
     } catch {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SR) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const rec: any = new SR();
-        srRef.current = rec;
-        rec.lang = typeof navigator !== 'undefined' ? (navigator.language || 'en-IN') : 'en-IN';
-        rec.interimResults = false;
-        rec.continuous = false;
-        setIsListening(true);
-        rec.onresult = async (e: { results: { 0: { 0: { transcript: string } } } }) => {
-          const transcript = e.results[0][0].transcript.trim();
-          setVoiceText(transcript);
-          setIsListening(false);
-          await parseVoice(transcript);
-        };
-        rec.onerror = () => {
-          setIsListening(false);
-          showT('Could not hear — try again');
-        };
-        rec.onend = () => setIsListening(false);
-        rec.start();
-        return;
-      }
-
       setIsListening(false);
       showT('Microphone access needed');
     }
