@@ -3,7 +3,8 @@ import Anthropic from '@anthropic-ai/sdk';
 
 export const runtime = 'nodejs';
 
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || '';
+// Accept either ANTHROPIC_API_KEY (SDK standard) or Claude_API_Key (user-named).
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || process.env.Claude_API_Key || process.env.CLAUDE_API_KEY || '';
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 
 function mapCategory(category?: string) {

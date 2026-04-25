@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || '';
+// Accept either ANTHROPIC_API_KEY (SDK standard) or Claude_API_Key (user-named).
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || process.env.Claude_API_Key || process.env.CLAUDE_API_KEY || '';
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 
 type Member = { name: string; isKid?: boolean; age?: number; dietaryFilters?: string[]; allergies?: string[]; dislikes?: string[] };
