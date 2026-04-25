@@ -240,7 +240,7 @@ function whitespaceFallbackItems(text: string) {
     .replace(/[,;]|\band\b|\bthen\b|\bwith\b|\n|\bplus\b|\baur\b/gi, ' ')
     .split(/\s+/)
     .map(t => t.replace(/[^a-z]/g, '').trim())
-    .filter(t => t.length >= 3 && !['the','and','some','need','have','want','add','for','few','box','bag','pack','kilo','gram','litre','liter'].includes(t));
+    .filter(t => t.length >= 3 && !['the','and','some','need','have','want','add','for','few','box','bag','pack','kilo','gram','litre','liter','dozen','pcs','pieces','piece','bunch','loaf','packet','grams','kilos','litres','liters','milliliter','milliliters','ml','oz','lb','lbs'].includes(t));
 
   const seen = new Set<string>();
   return cleanedTokens
@@ -313,10 +313,11 @@ export async function POST(req: NextRequest) {
     if (!transcript) return NextResponse.json({ items: [], transcript: '' });
 
     const directItems = directKnownItemsFromText(transcript);
-    // If we have at least 2 direct matches, also include any unrecognised whitespace-separated
-    // tokens as "Other" items. Saves a model call AND preserves words like "chole" that aren't
-    // yet in the dictionary.
-    if (directItems.length >= 2) {
+    // Direct-match shortcut: only when user hasn't specified explicit quantities.
+    // If the text contains digits ("2 kg aloo") we must run the LLM so it can parse
+    // them. Otherwise direct match is fine — saves a model call.
+    const hasExplicitQty = /\d/.test(transcript);
+    if (directItems.length >= 2 && !hasExplicitQty) {
       const matched = new Set(directItems.map(i => i.name.toLowerCase()));
       const matchedAliases = new Set<string>();
       const cleanedText = transcript.toLowerCase();
@@ -341,6 +342,8 @@ Rules:
 - category: "Produce" | "Dairy" | "Protein" | "Grains" | "Snacks" | "Beverages" | "Condiments" | "Frozen" | "Other"
 - emoji: one relevant emoji
 - Split lists like "bhindi pumpkin onion tomato" or "milk eggs bread" into separate grocery items even without commas.
+- NEVER return quantity words as their own items. "1 dozen anda" → ONE item: Eggs (qty 12, unit pcs). Words like "dozen", "kg", "gram", "litre", "pack", "packet", "bunch", "loaf" are ALWAYS quantity qualifiers, never groceries.
+- ALWAYS prefer the user-stated quantity over defaults. "500g methi" → Methi qty 500 unit g, NOT the default 1 bunch.
 - Ignore filler words like "bought", "got", "picked up", "some", "aur", "y", "und", "lah", "can".
 - The user may mix languages or local dialects — still extract the groceries correctly.
 
