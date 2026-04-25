@@ -27,6 +27,7 @@ interface AppState {
   wasteStreak: number; itemsUsed: number; itemsWasted: number;
   wastedByCategory: Record<string, number>;
   dislikedRecipes: string[];
+  paywallClicks: Record<string, number>;
   restockItems: RestockItem[];
   restockRegion: string;
 }
@@ -388,6 +389,7 @@ const INIT: AppState = {
   wasteStreak:0, itemsUsed:0, itemsWasted:0,
   wastedByCategory:{},
   dislikedRecipes:[],
+  paywallClicks:{},
   restockItems:[], restockRegion:'',
 };
 
@@ -413,6 +415,7 @@ function sanitizeState(input: Partial<AppState> | null | undefined): AppState | 
     restockRegion: typeof input.restockRegion === 'string' ? input.restockRegion : '',
     wastedByCategory: input.wastedByCategory && typeof input.wastedByCategory === 'object' ? input.wastedByCategory : {},
     dislikedRecipes: Array.isArray(input.dislikedRecipes) ? input.dislikedRecipes : [],
+    paywallClicks: input.paywallClicks && typeof input.paywallClicks === 'object' ? input.paywallClicks : {},
   };
 }
 
@@ -748,6 +751,49 @@ async function withTimeout<T>(promise: PromiseLike<T>, label: string, ms = 10000
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+// Paywall upsell — beta CTA. URL is env-configurable so the team can swap the
+// Kafe link without redeploying. Click is tracked into AppState.paywallClicks
+// keyed by `trigger` so we know which placement converted.
+function PaywallChip({
+  trigger,
+  label,
+  sublabel,
+  compact,
+  onTrack,
+}: {
+  trigger: string;
+  label: string;
+  sublabel?: string;
+  compact?: boolean;
+  onTrack: () => void;
+}) {
+  const baseUrl = process.env.NEXT_PUBLIC_KAFE_URL || 'https://kafe.ai/p/fridgebee-pro';
+  const sep = baseUrl.includes('?') ? '&' : '?';
+  const url = `${baseUrl}${sep}from=${encodeURIComponent(trigger)}`;
+  return (
+    <a
+      href={url} target="_blank" rel="noopener noreferrer" onClick={onTrack}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: compact ? '8px 12px' : '11px 13px',
+        borderRadius: 14,
+        background: 'linear-gradient(180deg, #FFF9EF 0%, #FFF1D8 100%)',
+        border: '1.5px solid #F5C44E',
+        textDecoration: 'none', color: 'var(--ink)',
+        cursor: 'pointer', fontFamily: 'inherit',
+        boxShadow: '0 2px 6px rgba(245,166,35,.18)',
+      }}
+    >
+      <span style={{ fontSize: compact ? 16 : 20, lineHeight: 1, flexShrink: 0 }}>🐝</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 800, fontSize: compact ? 12 : 13, color: 'var(--ink)', lineHeight: 1.2 }}>{label}</div>
+        {sublabel ? <div style={{ fontSize: compact ? 10 : 11, color: 'var(--mu)', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sublabel}</div> : null}
+      </div>
+      <span style={{ fontSize: 10, fontWeight: 800, color: '#C0392B', flexShrink: 0, letterSpacing: '.4px' }}>30% OFF →</span>
+    </a>
+  );
 }
 
 function ProfileSection({
@@ -1118,6 +1164,10 @@ export default function FridgeBee() {
 
   function up(p: Partial<AppState>) { setS(prev => ({...prev,...p})); }
   function showT(msg: string) { setToast(msg); setTimeout(()=>setToast(''), 2800); }
+  // Track which paywall placement the user tapped, so we can see which CTA converts.
+  function trackPaywall(trigger: string) {
+    setS(prev => ({ ...prev, paywallClicks: { ...prev.paywallClicks, [trigger]: (prev.paywallClicks[trigger] || 0) + 1 } }));
+  }
 
   async function continueWithGoogle() {
     setAuthBusy(true);
@@ -2057,6 +2107,15 @@ export default function FridgeBee() {
               </div>
             </div>
           )}
+          {/* Paywall — meals page hero */}
+          <div style={{ marginTop:10 }}>
+            <PaywallChip
+              trigger="meals_top"
+              label="Unlimited AI recipes — Pro Beta"
+              sublabel="Smarter weekly variety · 30% off forever"
+              onTrack={() => trackPaywall('meals_top')}
+            />
+          </div>
           {!hasPrefs && (
             <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8, background:'var(--wa)', borderRadius:14, padding:'10px 12px' }}>
               <span style={{ fontSize:14 }}>💡</span>
@@ -2100,28 +2159,38 @@ export default function FridgeBee() {
         </div>
 
         {mealsViewMode === 'days' && (
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10, padding:'14px 16px', background:'var(--white)', borderBottom:'1px solid var(--bd)' }}>
-            {dayPlanMeta().map(day => {
-              const active = selectedPlanDay === day.id;
-              return (
-                <button
-                  key={day.id}
-                  onClick={() => setSelectedPlanDay(day.id)}
-                  style={{
-                    background: active ? '#FFF5F0' : 'var(--wa)',
-                    border:`1.5px solid ${active ? '#F4C8C1' : 'var(--bd)'}`,
-                    borderRadius:18,
-                    padding:'12px 8px',
-                    cursor:'pointer',
-                    fontFamily:'inherit',
-                  }}
-                >
-                  <div style={{ fontSize:13, fontWeight:800, color: active ? '#C94A3A' : 'var(--ink)' }}>{day.label}</div>
-                  <div style={{ fontSize:10, marginTop:4, color: active ? '#C94A3A' : 'var(--mu)' }}>{day.subtitle}</div>
-                </button>
-              );
-            })}
-          </div>
+          <>
+            <div style={{ padding:'10px 16px 0', background:'var(--white)' }}>
+              <PaywallChip
+                trigger="meals_3day_plan"
+                label="3-day meal plan — Pro Beta"
+                sublabel="Plan a week of meals · 30% off forever"
+                onTrack={() => trackPaywall('meals_3day_plan')}
+              />
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10, padding:'14px 16px', background:'var(--white)', borderBottom:'1px solid var(--bd)' }}>
+              {dayPlanMeta().map(day => {
+                const active = selectedPlanDay === day.id;
+                return (
+                  <button
+                    key={day.id}
+                    onClick={() => setSelectedPlanDay(day.id)}
+                    style={{
+                      background: active ? '#FFF5F0' : 'var(--wa)',
+                      border:`1.5px solid ${active ? '#F4C8C1' : 'var(--bd)'}`,
+                      borderRadius:18,
+                      padding:'12px 8px',
+                      cursor:'pointer',
+                      fontFamily:'inherit',
+                    }}
+                  >
+                    <div style={{ fontSize:13, fontWeight:800, color: active ? '#C94A3A' : 'var(--ink)' }}>{day.label}</div>
+                    <div style={{ fontSize:10, marginTop:4, color: active ? '#C94A3A' : 'var(--mu)' }}>{day.subtitle}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </>
         )}
 
         {mealsViewMode === 'time' && (
@@ -2708,6 +2777,14 @@ export default function FridgeBee() {
             <div style={{ fontSize:12, color:'var(--mu)' }}>— Sent every Sunday, 9 PM</div>
           </div>
 
+          {/* Paywall — full insights breakdown */}
+          <PaywallChip
+            trigger="insights_full_breakdown"
+            label="Full insights — Pro Beta"
+            sublabel="Per-item waste history, monthly savings · 30% off forever"
+            onTrack={() => trackPaywall('insights_full_breakdown')}
+          />
+
         </div>
       </div>
     );
@@ -2735,7 +2812,15 @@ export default function FridgeBee() {
             </span>
           </div>
           <h1 style={{fontSize:24,color:'var(--ink)',marginBottom:2}}>fridge<span style={{color:'var(--bee)'}}>Bee</span></h1>
-          <p style={{fontSize:14,color:'var(--mu)',marginBottom:14}}>Who&apos;s eating tonight?</p>
+          <p style={{fontSize:14,color:'var(--mu)',marginBottom:10}}>Who&apos;s eating tonight?</p>
+          <div style={{ marginBottom:14 }}>
+            <PaywallChip
+              trigger="profile_top_banner"
+              label="Pro Beta — early-bird pricing"
+              sublabel="Lock in 30% off forever before launch"
+              onTrack={() => trackPaywall('profile_top_banner')}
+            />
+          </div>
           {/* Avatar row */}
           <div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:16}}>
             {/* You (main user) */}
@@ -2990,6 +3075,14 @@ export default function FridgeBee() {
                   ))}
                 </div>
             }
+            <div style={{ marginTop:12 }}>
+              <PaywallChip
+                trigger="profile_household_addmore"
+                label="Family mode — Pro Beta"
+                sublabel="Add more members with separate diets · 30% off forever"
+                onTrack={() => trackPaywall('profile_household_addmore')}
+              />
+            </div>
           </ProfileSection>
 
           <ProfileSection isOpen={openProfileSections.notifications} onToggle={()=>toggleSection('notifications')} title="🔔 Notifications">
