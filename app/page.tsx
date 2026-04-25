@@ -26,6 +26,7 @@ interface AppState {
   items: FoodItem[]; members: Member[];
   wasteStreak: number; itemsUsed: number; itemsWasted: number;
   wastedByCategory: Record<string, number>;
+  dislikedRecipes: string[];
   restockItems: RestockItem[];
   restockRegion: string;
 }
@@ -134,12 +135,24 @@ const ALL_CUISINES = ['Indian','Pakistani','Sri Lankan','Chinese','Japanese','Ko
   'German','British','Ethiopian','Nigerian','Persian','Moroccan','Malay','Australian'];
 const STORAGE_KEY = 'fridgebee_v2';
 
-// Market price estimates (base USD, scaled by country)
+// Market price estimates (base USD, scaled by country FX). Covers common globals
+// plus South Asian pantry staples so price guesses feel right for users in IN/PK/SG/MY.
 const ITEM_PRICES_USD: Record<string, number> = {
+  // Globals
   'Eggs':3.5,'Chicken':6,'Milk':2,'Broccoli':1.5,'Garlic':0.4,'Rice':2.5,
-  'Onion':0.5,'Spinach':1.5,'Tomatoes':1.5,'Cheese':4,'Fish':6,'Dal':2,
-  'Yogurt':2,'Butter':3,'Coriander':0.5,'Bell pepper':1,'Paneer':4,
-  'Potato':0.5,'Carrot':0.5,'Lemon':0.5,'Mango':2.5,'Juice':3,
+  'Onion':0.5,'Spinach':1.5,'Tomatoes':1.5,'Tomato':1.5,'Cheese':4,'Fish':6,'Dal':2,
+  'Yogurt':2,'Butter':3,'Coriander':0.5,'Bell pepper':1,'Capsicum':1,'Paneer':4,
+  'Potato':0.5,'Carrot':0.5,'Lemon':0.5,'Lime':0.5,'Mango':2.5,'Juice':3,
+  'Apple':1,'Banana':1,'Orange':1,'Avocado':1.5,'Grapes':3,'Berries':4,'Strawberries':4,
+  'Cucumber':1,'Lettuce':1.5,'Mushrooms':2,'Cauliflower':1.5,'Cabbage':1,'Pumpkin':2,'Peas':1.5,
+  'Beans':1.5,'Corn':1,'Mint':0.5,'Ginger':1,'Bread':2,'Pasta':2,'Noodles':2,'Oats':2,
+  // South Asian / Indian pantry staples — base prices set so FX (US:1, IN:83, SG:1.35) yields realistic local numbers
+  'Bhindi':1.5,'Okra':1.5,'Atta':2,'Maida':1.5,'Besan':2.5,'Sooji':2,'Poha':2,'Jaggery':2,'Idli rava':2,
+  'Rajma':2.5,'Chole':2.5,'Chickpeas':2,'Toor dal':2,'Moong dal':2,'Urad dal':2,'Masoor dal':2,
+  'Roti':2,'Curd':2,'Honey':5,'Green chilli':0.5,'Curry leaves':0.5,
+  // Other proteins / specialty
+  'Salmon':8,'Prawns':8,'Tofu':3,'Mutton':8,'Lamb':9,'Beef':7,'Pork':6,
+  'Mozzarella':4,'Feta':5,'Tortilla':2,'Pita':2.5,'Bun':1,'Hummus':3,
 };
 const FX: Record<string,number> = { US:1, IN:83, SG:1.35, GB:0.79, AU:1.53, MY:4.7, PK:280, AE:3.67 };
 function estimatePrice(name: string, country: string): number {
@@ -220,6 +233,32 @@ function detectCountry() {
   return 'US';
 }
 
+// Six common picks shown by default during onboarding, keyed by country.
+// First 6 = "common in your area", the rest are still shown if user expands.
+const QUICK_BY_COUNTRY: Record<string, string[]> = {
+  IN: ['Onion','Tomato','Paneer','Dal','Coriander','Yogurt'],
+  PK: ['Onion','Tomato','Yogurt','Coriander','Eggs','Bread'],
+  SG: ['Eggs','Rice','Cheese','Spinach','Carrot','Tomato'],
+  MY: ['Rice','Eggs','Carrot','Onion','Tomato','Spinach'],
+  AE: ['Eggs','Tomato','Yogurt','Onion','Carrot','Cheese'],
+  GB: ['Eggs','Milk','Bread','Cheese','Tomato','Spinach'],
+  AU: ['Eggs','Milk','Bread','Cheese','Tomato','Spinach'],
+  US: ['Eggs','Milk','Bread','Cheese','Tomato','Spinach'],
+};
+
+// Cuisine compass — broad regional groupings the user picks from in 1 tap.
+// Each maps to the recipe-pool cuisines it should pull from.
+const CUISINE_COMPASS: Array<{ id: string; emoji: string; label: string; pulls: string[] }> = [
+  { id: 'South Asian',   emoji: '🍛', label: 'South Asian',   pulls: ['indian'] },
+  { id: 'Mediterranean', emoji: '🥘', label: 'Mediterranean', pulls: ['mediterranean','italian'] },
+  { id: 'Western',       emoji: '🥩', label: 'Western',       pulls: ['american','italian'] },
+  { id: 'East Asian',    emoji: '🍜', label: 'East Asian',    pulls: ['asian'] },
+  { id: 'Latin',         emoji: '🌮', label: 'Latin',         pulls: ['mexican'] },
+];
+
+// Diet preference quick-toggles shown during onboarding (subset of DIETARY_OPTIONS).
+const DIET_QUICK = ['Vegetarian','Vegan','Halal','Other'];
+
 // Quick-pick items for onboarding — tap to add
 const QUICK_ITEMS: Omit<FoodItem,'id'|'added'>[] = [
   { name:'Eggs',       emoji:'🥚', shelf:'fridge',  category:'Dairy',   qty:6,   unit:'pcs', expiry:daysFromNow(14) },
@@ -238,7 +277,7 @@ const QUICK_ITEMS: Omit<FoodItem,'id'|'added'>[] = [
   { name:'Butter',     emoji:'🧈', shelf:'fridge',  category:'Dairy',   qty:100, unit:'g',   expiry:daysFromNow(30) },
   { name:'Coriander',  emoji:'🌿', shelf:'fridge',  category:'Produce', qty:50,  unit:'g',   expiry:daysFromNow(5)  },
   { name:'Bell pepper',emoji:'🫑', shelf:'fridge',  category:'Produce', qty:2,   unit:'pcs', expiry:daysFromNow(7)  },
-  { name:'Paneer',     emoji:'🟨', shelf:'fridge',  category:'Dairy',   qty:200, unit:'g',   expiry:daysFromNow(7)  },
+  { name:'Paneer',     emoji:'🧀', shelf:'fridge',  category:'Dairy',   qty:200, unit:'g',   expiry:daysFromNow(7)  },
   { name:'Potato',     emoji:'🥔', shelf:'pantry',  category:'Produce', qty:4,   unit:'pcs', expiry:daysFromNow(21) },
   { name:'Carrot',     emoji:'🥕', shelf:'fridge',  category:'Produce', qty:3,   unit:'pcs', expiry:daysFromNow(14) },
   { name:'Lemon',      emoji:'🍋', shelf:'fridge',  category:'Produce', qty:3,   unit:'pcs', expiry:daysFromNow(14) },
@@ -298,6 +337,7 @@ const INIT: AppState = {
   items:[], members:[],
   wasteStreak:0, itemsUsed:0, itemsWasted:0,
   wastedByCategory:{},
+  dislikedRecipes:[],
   restockItems:[], restockRegion:'',
 };
 
@@ -322,7 +362,42 @@ function sanitizeState(input: Partial<AppState> | null | undefined): AppState | 
     restockItems: Array.isArray(input.restockItems) ? input.restockItems : [],
     restockRegion: typeof input.restockRegion === 'string' ? input.restockRegion : '',
     wastedByCategory: input.wastedByCategory && typeof input.wastedByCategory === 'object' ? input.wastedByCategory : {},
+    dislikedRecipes: Array.isArray(input.dislikedRecipes) ? input.dislikedRecipes : [],
   };
+}
+
+// Name-based emoji lookup so unrecognised items don't default to 📦.
+const NAME_EMOJI: Record<string, string> = {
+  okra:'🥒', bhindi:'🥒', cucumber:'🥒', kheera:'🥒',
+  pumpkin:'🎃', kaddu:'🎃',
+  cauliflower:'🥦', gobhi:'🥦', gobi:'🥦', broccoli:'🥦',
+  cabbage:'🥬', spinach:'🥬', palak:'🥬', lettuce:'🥬',
+  onion:'🧅', pyaaz:'🧅',
+  tomato:'🍅', tamatar:'🍅',
+  potato:'🥔', aloo:'🥔',
+  carrot:'🥕', gajar:'🥕',
+  capsicum:'🫑', 'bell pepper':'🫑',
+  garlic:'🧄', lehsun:'🧄', ginger:'🫚', adrak:'🫚',
+  lemon:'🍋', lime:'🍋', nimbu:'🍋',
+  apple:'🍎', banana:'🍌', kela:'🍌',
+  mango:'🥭', aam:'🥭', orange:'🍊', avocado:'🥑',
+  grapes:'🍇', berries:'🫐', strawberry:'🍓', strawberries:'🍓',
+  peas:'🫛', matar:'🫛', beans:'🫛', corn:'🌽',
+  mushroom:'🍄', mushrooms:'🍄',
+  coriander:'🌿', dhania:'🌿', cilantro:'🌿', mint:'🌿', pudina:'🌿', basil:'🌿',
+  milk:'🥛', doodh:'🥛', susu:'🥛',
+  paneer:'🧀', cheese:'🧀', mozzarella:'🧀', feta:'🧀',
+  butter:'🧈', makhan:'🧈', yogurt:'🥣', curd:'🥣', dahi:'🥣',
+  eggs:'🥚', egg:'🥚', anda:'🥚', telur:'🥚',
+  chicken:'🍗', murgh:'🍗', mutton:'🥩', lamb:'🥩', beef:'🥩', pork:'🥓',
+  fish:'🐟', salmon:'🐟', machli:'🐟', prawns:'🦐', shrimp:'🦐', tofu:'🥡',
+  bread:'🍞', roti:'🫓', rice:'🍚', chawal:'🍚', pasta:'🍝', noodles:'🍜',
+  oats:'🥣', dal:'🫘', lentils:'🫘', rajma:'🫘', chickpeas:'🫘', chana:'🫘',
+  tortilla:'🫓', pita:'🫓',
+};
+function emojiForName(name: string) {
+  const key = name.toLowerCase().trim();
+  return NAME_EMOJI[key] || NAME_EMOJI[key.split(/\s+/)[0]] || '';
 }
 
 function normalizeParsedItem(it: ParsedInputItem, country: string): Partial<FoodItem> {
@@ -331,9 +406,12 @@ function normalizeParsedItem(it: ParsedInputItem, country: string): Partial<Food
     ? rawName.split(/\s+/).map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ')
     : '';
   const category = it.category || 'Other';
+  // If incoming emoji is missing or is the generic package, look it up by name first.
+  const incoming = (it.emoji || '').trim();
+  const emoji = (!incoming || incoming === '📦' || incoming === '🟨') ? (emojiForName(name) || '📦') : incoming;
   return {
     name,
-    emoji: it.emoji || '📦',
+    emoji,
     shelf: it.shelf || 'fridge',
     category,
     qty: it.qty ?? it.quantity ?? 1,
@@ -399,40 +477,89 @@ function pickHeroItem(items: FoodItem[]): FoodItem | undefined {
   );
 }
 
-type FallbackRecipe = { name: string; emoji: string; desc: string; kcal: number; protein: number; cookTime: number; steps: string[]; ingredients: string[]; tags: string[] };
+type FallbackRecipe = {
+  name: string; emoji: string; desc: string; kcal: number; protein: number; cookTime: number;
+  ingredients: string[]; steps: string[]; tags: string[];
+  isVeg: boolean; isVegan: boolean;
+  contains: string[];   // ['Dairy','Eggs','Gluten','Nuts','Peanuts','Fish','Shellfish','Soy','Sesame']
+  cuisine: string;      // 'Indian','American','Italian','Asian','Mexican','Mediterranean','Universal'
+  anchors: string[];    // primary ingredients (lowercase) — recipe wants at least one in fridge
+  kidSafe?: boolean;    // optional; defaults to true. Mark false for caffeine, whole nuts, very spicy, choking hazards.
+};
+
+// Pantry staples assumed available — don't count toward fridge overlap or anchor checks.
+const STAPLES = new Set(['salt','sugar','water','oil','olive oil','ghee','butter','pepper','black pepper','spices','cumin','turmeric','chilli flakes','chilli','chili','chillies','curry leaves','mustard seeds','cardamom','soy sauce','vinegar','honey','flour','wheat flour','basmati rice','rice','pasta','bread','wrap','cheese']);
 
 const SLOT_RECIPES: Record<'breakfast'|'lunch'|'snack'|'dinner', FallbackRecipe[]> = {
   breakfast: [
-    { name:'Veggie Omelette', emoji:'🍳', desc:'Fluffy omelette with onion, tomato and herbs.', kcal:230, protein:14, cookTime:10, ingredients:['Eggs','Onion','Tomato','Salt','Oil'], steps:['Whisk 2 eggs with a pinch of salt.','Sauté chopped onion and tomato in oil for 1 min.','Pour eggs over, cook on low until set.','Fold and serve with toast.'], tags:['quick','protein'] },
-    { name:'Masala Oats', emoji:'🥣', desc:'Savoury Indian-style oats with veg and spices.', kcal:220, protein:8, cookTime:12, ingredients:['Oats','Onion','Carrot','Peas','Turmeric'], steps:['Heat oil, sauté onion and chopped veg 3 min.','Add 1 cup water, salt and turmeric — bring to boil.','Stir in oats, cook 4 min stirring often.','Garnish with coriander, serve hot.'], tags:['savoury','filling'] },
-    { name:'Banana Smoothie Bowl', emoji:'🍌', desc:'Creamy banana smoothie topped with fruit.', kcal:260, protein:9, cookTime:5, ingredients:['Banana','Milk','Honey','Oats','Berries'], steps:['Blend banana with milk and a spoon of honey.','Pour into a bowl.','Top with oats and chopped berries.','Serve immediately.'], tags:['no-cook','sweet'] },
-    { name:'Aloo Paratha', emoji:'🫓', desc:'Stuffed potato flatbread — classic Indian breakfast.', kcal:320, protein:9, cookTime:25, ingredients:['Wheat flour','Potato','Onion','Coriander','Spices'], steps:['Mash boiled potato with chopped onion, coriander and spices.','Roll dough, stuff with potato mix and seal.','Roll out gently into a flat round.','Cook on a hot tawa with ghee until golden on both sides.'], tags:['indian','filling'] },
-    { name:'Avocado Toast', emoji:'🥑', desc:'Mashed avocado on toast with chilli flakes.', kcal:290, protein:7, cookTime:7, ingredients:['Bread','Avocado','Lemon','Chilli flakes','Salt'], steps:['Toast 2 slices of bread.','Mash avocado with lemon juice and salt.','Spread on toast, top with chilli flakes.','Serve right away.'], tags:['quick','vegan'] },
-    { name:'Poha', emoji:'🥘', desc:'Light flattened-rice breakfast with peanuts and curry leaves.', kcal:240, protein:6, cookTime:15, ingredients:['Poha','Onion','Mustard seeds','Curry leaves','Peanuts'], steps:['Rinse poha and drain.','Heat oil, splutter mustard seeds and curry leaves with peanuts.','Add chopped onion, sauté 2 min.','Stir in poha with salt and turmeric, cook 2 min, garnish with lemon.'], tags:['indian','light'] },
+    // Indian
+    { name:'Veggie Omelette', emoji:'🍳', desc:'Fluffy omelette with onion, tomato and herbs.', kcal:230, protein:14, cookTime:10, ingredients:['Eggs','Onion','Tomato','Salt','Oil'], steps:['Whisk 2 eggs with a pinch of salt.','Sauté chopped onion and tomato in oil for 1 min.','Pour eggs over, cook on low until set.','Fold and serve with toast.'], tags:['quick','protein'], isVeg:true, isVegan:false, contains:['Eggs'], cuisine:'Universal', anchors:['eggs','egg','onion','tomato'] },
+    { name:'Masala Oats', emoji:'🥣', desc:'Savoury Indian-style oats with veg and spices.', kcal:220, protein:8, cookTime:12, ingredients:['Oats','Onion','Carrot','Peas','Turmeric'], steps:['Heat oil, sauté onion and chopped veg 3 min.','Add 1 cup water, salt and turmeric — bring to boil.','Stir in oats, cook 4 min stirring often.','Garnish with coriander, serve hot.'], tags:['savoury','filling'], isVeg:true, isVegan:true, contains:['Gluten'], cuisine:'Indian', anchors:['oats','onion','carrot'] },
+    { name:'Aloo Paratha', emoji:'🫓', desc:'Stuffed potato flatbread — classic Indian breakfast.', kcal:320, protein:9, cookTime:25, ingredients:['Wheat flour','Potato','Onion','Coriander','Spices'], steps:['Mash boiled potato with chopped onion, coriander and spices.','Roll dough, stuff with potato mix and seal.','Roll out gently into a flat round.','Cook on a hot tawa with ghee until golden on both sides.'], tags:['indian','filling'], isVeg:true, isVegan:false, contains:['Gluten','Dairy'], cuisine:'Indian', anchors:['potato','aloo'] },
+    { name:'Poha', emoji:'🥘', desc:'Light flattened-rice breakfast with peanuts and curry leaves.', kcal:240, protein:6, cookTime:15, ingredients:['Poha','Onion','Mustard seeds','Curry leaves','Peanuts'], steps:['Rinse poha and drain.','Heat oil, splutter mustard seeds and curry leaves with peanuts.','Add chopped onion, sauté 2 min.','Stir in poha with salt and turmeric, cook 2 min, garnish with lemon.'], tags:['indian','light'], isVeg:true, isVegan:true, contains:['Peanuts'], cuisine:'Indian', anchors:['poha','onion'] },
+    // Universal / American
+    { name:'Banana Smoothie Bowl', emoji:'🍌', desc:'Creamy banana smoothie topped with fruit.', kcal:260, protein:9, cookTime:5, ingredients:['Banana','Milk','Honey','Oats','Berries'], steps:['Blend banana with milk and a spoon of honey.','Pour into a bowl.','Top with oats and chopped berries.','Serve immediately.'], tags:['no-cook','sweet'], isVeg:true, isVegan:false, contains:['Dairy','Gluten'], cuisine:'Universal', anchors:['banana','milk','oats'] },
+    { name:'Avocado Toast', emoji:'🥑', desc:'Mashed avocado on toast with chilli flakes.', kcal:290, protein:7, cookTime:7, ingredients:['Bread','Avocado','Lemon','Chilli flakes','Salt'], steps:['Toast 2 slices of bread.','Mash avocado with lemon juice and salt.','Spread on toast, top with chilli flakes.','Serve right away.'], tags:['quick','vegan'], isVeg:true, isVegan:true, contains:['Gluten'], cuisine:'American', anchors:['avocado','bread'] },
+    { name:'Pancakes & Berries', emoji:'🥞', desc:'Fluffy pancakes topped with seasonal berries.', kcal:340, protein:9, cookTime:15, ingredients:['Flour','Milk','Eggs','Berries','Maple syrup'], steps:['Whisk flour, milk and eggs into a smooth batter.','Cook small ladles on a non-stick pan until bubbles form, then flip.','Stack and top with berries.','Drizzle maple syrup and serve.'], tags:['american','sweet'], isVeg:true, isVegan:false, contains:['Gluten','Dairy','Eggs'], cuisine:'American', anchors:['flour','milk','eggs','egg','berries'] },
+    { name:'Greek Yogurt Parfait', emoji:'🥛', desc:'Layered Greek yogurt with granola and fruit.', kcal:240, protein:14, cookTime:5, ingredients:['Greek yogurt','Granola','Berries','Honey'], steps:['Spoon yogurt into a glass.','Layer with granola and berries.','Drizzle honey.','Serve chilled.'], tags:['no-cook','protein'], isVeg:true, isVegan:false, contains:['Dairy','Gluten','Nuts'], cuisine:'Mediterranean', anchors:['yogurt','berries','granola'] },
+    { name:'Veggie Scramble Wrap', emoji:'🌯', desc:'Scrambled eggs with sautéed peppers and spinach in a wrap.', kcal:310, protein:18, cookTime:12, ingredients:['Eggs','Spinach','Bell pepper','Tortilla','Cheese'], steps:['Sauté pepper and spinach in oil 2 min.','Add beaten eggs and scramble until set.','Warm a tortilla, fill with eggs and cheese.','Roll tight, slice and serve.'], tags:['protein','portable'], isVeg:true, isVegan:false, contains:['Eggs','Dairy','Gluten'], cuisine:'American', anchors:['eggs','egg','spinach','bell pepper','capsicum'] },
+    { name:'Congee with Veg', emoji:'🍚', desc:'Silky rice porridge with ginger, scallion and soy.', kcal:230, protein:6, cookTime:30, ingredients:['Rice','Ginger','Scallion','Soy sauce','Sesame oil'], steps:['Simmer rice in 6x water with sliced ginger 25 min.','Stir until silky.','Top with chopped scallion.','Drizzle soy and sesame oil; serve.'], tags:['asian','comfort'], isVeg:true, isVegan:true, contains:['Soy','Sesame'], cuisine:'Asian', anchors:['rice','ginger'] },
+    { name:'Shakshuka', emoji:'🍳', desc:'Eggs poached in spiced tomato pepper sauce.', kcal:280, protein:14, cookTime:25, ingredients:['Eggs','Tomato','Bell pepper','Onion','Cumin'], steps:['Sauté onion and pepper in olive oil.','Add tomato and cumin, simmer 8 min.','Make wells, crack eggs into them.','Cover and cook 5 min until whites set; serve with bread.'], tags:['mediterranean','protein'], isVeg:true, isVegan:false, contains:['Eggs'], cuisine:'Mediterranean', anchors:['eggs','egg','tomato','bell pepper','capsicum'] },
+    { name:'Tofu Scramble', emoji:'🥘', desc:'Vegan scramble with turmeric and veg.', kcal:240, protein:16, cookTime:10, ingredients:['Tofu','Turmeric','Onion','Spinach','Black pepper'], steps:['Crumble tofu into a hot pan with oil.','Add turmeric, salt and pepper, stir 2 min.','Add chopped onion and spinach.','Cook 3 more min and serve.'], tags:['vegan','protein'], isVeg:true, isVegan:true, contains:['Soy'], cuisine:'Universal', anchors:['tofu','spinach','onion'] },
   ],
   lunch: [
-    { name:'Vegetable Fried Rice', emoji:'🍚', desc:'Quick fried rice using whatever veg you have.', kcal:340, protein:9, cookTime:15, ingredients:['Rice','Mixed vegetables','Soy sauce','Garlic','Oil'], steps:['Heat oil in a wok on high heat.','Add garlic, then diced vegetables and stir-fry 2 min.','Add cooked rice and soy sauce, toss well.','Serve hot, garnished with spring onion.'], tags:['quick','one-pan'] },
-    { name:'Roti & Sabzi', emoji:'🫓', desc:'Soft wheat flatbread with a quick veg curry.', kcal:360, protein:11, cookTime:25, ingredients:['Wheat flour','Mixed veg','Onion','Tomato','Spices'], steps:['Cook onion-tomato masala in oil until soft.','Add chopped veg and Indian spices, cook covered 8 min.','Make rotis from wheat dough on a hot tawa.','Serve hot together.'], tags:['indian','home-style'] },
-    { name:'Paneer Wrap', emoji:'🌯', desc:'Spiced paneer rolled in a flatbread with veggies.', kcal:380, protein:18, cookTime:15, ingredients:['Paneer','Wrap','Onion','Capsicum','Yogurt sauce'], steps:['Marinate cubed paneer in yogurt and spices 10 min.','Pan-fry until lightly charred.','Warm wrap, layer with sauce, paneer and sliced veg.','Roll tight and serve.'], tags:['portable','protein'] },
-    { name:'Khichdi', emoji:'🍲', desc:'One-pot rice and lentil comfort dish.', kcal:300, protein:12, cookTime:25, ingredients:['Rice','Yellow dal','Ghee','Cumin','Turmeric'], steps:['Rinse rice and dal together.','Heat ghee, splutter cumin.','Add rice-dal, water (3:1), turmeric, salt.','Cover and cook 20 min until very soft.'], tags:['comfort','one-pot'] },
-    { name:'Veg Pasta', emoji:'🍝', desc:'Pasta tossed with garlic, tomato and seasonal veg.', kcal:380, protein:11, cookTime:20, ingredients:['Pasta','Tomato','Garlic','Olive oil','Mixed veg'], steps:['Boil pasta in salted water until al dente.','Sauté garlic, add chopped veg and tomato.','Toss pasta in the sauce.','Finish with olive oil and serve.'], tags:['quick','italian'] },
-    { name:'Chickpea Salad Bowl', emoji:'🥗', desc:'Protein-packed chickpea bowl with crunchy veg.', kcal:320, protein:14, cookTime:10, ingredients:['Chickpeas','Cucumber','Tomato','Lemon','Olive oil'], steps:['Drain and rinse chickpeas.','Chop cucumber and tomato, mix with chickpeas.','Dress with lemon juice, olive oil, salt and pepper.','Toss well and serve.'], tags:['no-cook','protein'] },
+    // Indian
+    { name:'Roti & Sabzi', emoji:'🫓', desc:'Soft wheat flatbread with a quick veg curry.', kcal:360, protein:11, cookTime:25, ingredients:['Wheat flour','Mixed veg','Onion','Tomato','Spices'], steps:['Cook onion-tomato masala in oil until soft.','Add chopped veg and Indian spices, cook covered 8 min.','Make rotis from wheat dough on a hot tawa.','Serve hot together.'], tags:['indian','home-style'], isVeg:true, isVegan:true, contains:['Gluten'], cuisine:'Indian', anchors:['onion','tomato','potato','cauliflower','okra','bhindi'] },
+    { name:'Khichdi', emoji:'🍲', desc:'One-pot rice and lentil comfort dish.', kcal:300, protein:12, cookTime:25, ingredients:['Rice','Yellow dal','Ghee','Cumin','Turmeric'], steps:['Rinse rice and dal together.','Heat ghee, splutter cumin.','Add rice-dal, water (3:1), turmeric, salt.','Cover and cook 20 min until very soft.'], tags:['comfort','one-pot'], isVeg:true, isVegan:false, contains:['Dairy'], cuisine:'Indian', anchors:['rice','dal','lentils'] },
+    { name:'Paneer Wrap', emoji:'🌯', desc:'Spiced paneer rolled in a flatbread with veggies.', kcal:380, protein:18, cookTime:15, ingredients:['Paneer','Wrap','Onion','Bell pepper','Yogurt'], steps:['Marinate cubed paneer in yogurt and spices 10 min.','Pan-fry until lightly charred.','Warm wrap, layer with sauce, paneer and sliced veg.','Roll tight and serve.'], tags:['portable','protein'], isVeg:true, isVegan:false, contains:['Dairy','Gluten'], cuisine:'Indian', anchors:['paneer','onion','bell pepper','capsicum'] },
+    // Italian
+    { name:'Veg Pasta Pomodoro', emoji:'🍝', desc:'Pasta in a simple garlic-tomato sauce.', kcal:380, protein:11, cookTime:20, ingredients:['Pasta','Tomato','Garlic','Olive oil','Basil'], steps:['Boil pasta in salted water until al dente.','Sauté garlic in olive oil, add chopped tomato.','Toss pasta in the sauce.','Finish with basil and serve.'], tags:['italian','quick'], isVeg:true, isVegan:true, contains:['Gluten'], cuisine:'Italian', anchors:['pasta','tomato','garlic'] },
+    { name:'Caprese Salad', emoji:'🥗', desc:'Tomato, mozzarella and basil with olive oil.', kcal:280, protein:14, cookTime:5, ingredients:['Tomato','Mozzarella','Basil','Olive oil','Salt'], steps:['Slice tomato and mozzarella thick.','Layer alternating with basil leaves.','Drizzle olive oil and salt.','Serve immediately.'], tags:['italian','no-cook'], isVeg:true, isVegan:false, contains:['Dairy'], cuisine:'Italian', anchors:['tomato','cheese','mozzarella'] },
+    // American
+    { name:'Grilled Cheese & Tomato Soup', emoji:'🧀', desc:'Toasted cheese sandwich with a quick tomato soup.', kcal:420, protein:16, cookTime:20, ingredients:['Bread','Cheese','Butter','Tomato','Onion'], steps:['Sauté onion, add chopped tomato, simmer 8 min, blend.','Butter bread, layer cheese, toast on a pan until golden.','Slice sandwich.','Serve with the soup.'], tags:['american','comfort'], isVeg:true, isVegan:false, contains:['Dairy','Gluten'], cuisine:'American', anchors:['bread','cheese','tomato'] },
+    { name:'Cobb Salad', emoji:'🥗', desc:'Crunchy salad with chicken, egg, avocado and cheese.', kcal:420, protein:30, cookTime:15, ingredients:['Lettuce','Chicken','Eggs','Avocado','Cheese'], steps:['Boil eggs and slice chicken.','Arrange lettuce with rows of chicken, egg, avocado, cheese.','Drizzle vinaigrette.','Serve cold.'], tags:['american','protein'], isVeg:false, isVegan:false, contains:['Eggs','Dairy'], cuisine:'American', anchors:['chicken','lettuce','eggs','egg','avocado'] },
+    // Asian
+    { name:'Vegetable Fried Rice', emoji:'🍚', desc:'Quick fried rice using whatever veg you have.', kcal:340, protein:9, cookTime:15, ingredients:['Rice','Mixed vegetables','Soy sauce','Garlic','Oil'], steps:['Heat oil in a wok on high heat.','Add garlic, then diced vegetables and stir-fry 2 min.','Add cooked rice and soy sauce, toss well.','Serve hot, garnished with spring onion.'], tags:['asian','quick'], isVeg:true, isVegan:true, contains:['Soy'], cuisine:'Asian', anchors:['rice','carrot','peas','bell pepper'] },
+    { name:'Stir-fry Noodles', emoji:'🍜', desc:'Wok-tossed noodles with vegetables and soy.', kcal:380, protein:12, cookTime:15, ingredients:['Noodles','Cabbage','Carrot','Soy sauce','Garlic'], steps:['Boil noodles per pack and drain.','Stir-fry garlic, cabbage and carrot 3 min.','Add noodles and soy sauce, toss 2 min.','Serve hot.'], tags:['asian','quick'], isVeg:true, isVegan:true, contains:['Gluten','Soy'], cuisine:'Asian', anchors:['noodles','cabbage','carrot'] },
+    // Mediterranean / Mexican
+    { name:'Chickpea Salad Bowl', emoji:'🥗', desc:'Protein-packed chickpea bowl with crunchy veg.', kcal:320, protein:14, cookTime:10, ingredients:['Chickpeas','Cucumber','Tomato','Lemon','Olive oil'], steps:['Drain and rinse chickpeas.','Chop cucumber and tomato, mix with chickpeas.','Dress with lemon juice, olive oil, salt and pepper.','Toss well and serve.'], tags:['mediterranean','no-cook'], isVeg:true, isVegan:true, contains:[], cuisine:'Mediterranean', anchors:['chickpeas','cucumber','tomato'] },
+    { name:'Black Bean Burrito Bowl', emoji:'🌯', desc:'Rice bowl with black beans, corn and salsa.', kcal:420, protein:15, cookTime:15, ingredients:['Rice','Black beans','Corn','Tomato','Lime'], steps:['Warm beans with cumin and salt.','Spoon rice into a bowl, top with beans and corn.','Add chopped tomato and a squeeze of lime.','Serve at once.'], tags:['mexican','filling'], isVeg:true, isVegan:true, contains:[], cuisine:'Mexican', anchors:['rice','black beans','beans','corn'] },
   ],
   snack: [
-    { name:'Masala Chai & Biscuit', emoji:'☕', desc:'Spiced milk tea served with a biscuit on the side.', kcal:140, protein:4, cookTime:7, ingredients:['Tea','Milk','Sugar','Cardamom','Ginger'], steps:['Boil water with crushed cardamom and ginger.','Add tea leaves and simmer 1 min.','Pour in milk and sugar, bring to a brief boil.','Strain into cups, serve with a biscuit.'], tags:['drink','classic'] },
-    { name:'Fruit Yogurt Cup', emoji:'🍓', desc:'Greek yogurt layered with chopped fruit and honey.', kcal:180, protein:10, cookTime:5, ingredients:['Yogurt','Berries','Banana','Honey'], steps:['Spoon yogurt into a glass.','Layer chopped fruit on top.','Drizzle honey.','Serve chilled.'], tags:['no-cook','protein'] },
-    { name:'Masala Peanuts', emoji:'🥜', desc:'Crunchy spiced peanuts with onion and lemon.', kcal:230, protein:9, cookTime:6, ingredients:['Peanuts','Onion','Lemon','Coriander','Chaat masala'], steps:['Roast peanuts dry until crisp, cool.','Toss with finely chopped onion and coriander.','Squeeze lemon and sprinkle chaat masala.','Serve immediately.'], tags:['indian','crunch'] },
-    { name:'Veg Sandwich Bites', emoji:'🥪', desc:'Toasted sandwich quarters with cheese and veg.', kcal:220, protein:9, cookTime:10, ingredients:['Bread','Cheese','Cucumber','Tomato','Butter'], steps:['Butter bread slices on the outside.','Layer cheese, cucumber and tomato inside.','Toast on a hot pan until golden both sides.','Cut into quarters and serve warm.'], tags:['quick','easy'] },
-    { name:'Hummus & Veg Sticks', emoji:'🥕', desc:'Creamy hummus with crunchy raw veg dippers.', kcal:190, protein:7, cookTime:5, ingredients:['Hummus','Carrot','Cucumber','Capsicum'], steps:['Cut veg into long sticks.','Spoon hummus into a small bowl.','Arrange veg around the bowl.','Serve at room temperature.'], tags:['no-cook','vegan'] },
-    { name:'Mango Lassi', emoji:'🥭', desc:'Cool mango yogurt smoothie.', kcal:200, protein:6, cookTime:5, ingredients:['Mango','Yogurt','Milk','Sugar','Cardamom'], steps:['Blend mango chunks, yogurt and milk smooth.','Add a little sugar and cardamom.','Pour into chilled glasses.','Serve cold.'], tags:['drink','sweet'] },
+    // Indian
+    { name:'Masala Chai & Biscuit', emoji:'☕', desc:'Spiced milk tea served with a biscuit on the side.', kcal:140, protein:4, cookTime:7, ingredients:['Tea','Milk','Sugar','Cardamom','Ginger'], steps:['Boil water with crushed cardamom and ginger.','Add tea leaves and simmer 1 min.','Pour in milk and sugar, bring to a brief boil.','Strain into cups, serve with a biscuit.'], tags:['drink','classic'], isVeg:true, isVegan:false, contains:['Dairy'], cuisine:'Indian', anchors:['tea','milk'], kidSafe:false },
+    { name:'Masala Peanuts', emoji:'🥜', desc:'Crunchy spiced peanuts with onion and lemon.', kcal:230, protein:9, cookTime:6, ingredients:['Peanuts','Onion','Lemon','Coriander','Chaat masala'], steps:['Roast peanuts dry until crisp, cool.','Toss with finely chopped onion and coriander.','Squeeze lemon and sprinkle chaat masala.','Serve immediately.'], tags:['indian','crunch'], isVeg:true, isVegan:true, contains:['Peanuts'], cuisine:'Indian', anchors:['peanuts','onion'], kidSafe:false },
+    { name:'Mango Lassi', emoji:'🥭', desc:'Cool mango yogurt smoothie.', kcal:200, protein:6, cookTime:5, ingredients:['Mango','Yogurt','Milk','Sugar','Cardamom'], steps:['Blend mango chunks, yogurt and milk smooth.','Add a little sugar and cardamom.','Pour into chilled glasses.','Serve cold.'], tags:['drink','sweet'], isVeg:true, isVegan:false, contains:['Dairy'], cuisine:'Indian', anchors:['mango','yogurt','milk'] },
+    // Universal
+    { name:'Fruit Yogurt Cup', emoji:'🍓', desc:'Greek yogurt layered with chopped fruit and honey.', kcal:180, protein:10, cookTime:5, ingredients:['Yogurt','Berries','Banana','Honey'], steps:['Spoon yogurt into a glass.','Layer chopped fruit on top.','Drizzle honey.','Serve chilled.'], tags:['no-cook','protein'], isVeg:true, isVegan:false, contains:['Dairy'], cuisine:'Universal', anchors:['yogurt','berries','banana'] },
+    { name:'Hummus & Veg Sticks', emoji:'🥕', desc:'Creamy hummus with crunchy raw veg dippers.', kcal:190, protein:7, cookTime:5, ingredients:['Hummus','Carrot','Cucumber','Bell pepper'], steps:['Cut veg into long sticks.','Spoon hummus into a small bowl.','Arrange veg around the bowl.','Serve at room temperature.'], tags:['mediterranean','no-cook'], isVeg:true, isVegan:true, contains:[], cuisine:'Mediterranean', anchors:['hummus','carrot','cucumber'] },
+    { name:'Cheese & Crackers', emoji:'🧀', desc:'Sliced cheese on crackers with grapes.', kcal:240, protein:9, cookTime:3, ingredients:['Crackers','Cheese','Grapes'], steps:['Slice cheese onto crackers.','Arrange on a plate with grapes.','Serve.'], tags:['american','no-cook'], isVeg:true, isVegan:false, contains:['Dairy','Gluten'], cuisine:'American', anchors:['cheese','crackers','grapes'] },
+    { name:'Bruschetta', emoji:'🥖', desc:'Toasted bread with fresh tomato and basil.', kcal:200, protein:6, cookTime:10, ingredients:['Bread','Tomato','Basil','Garlic','Olive oil'], steps:['Toast slices of bread.','Rub with raw garlic.','Top with diced tomato, basil and olive oil.','Serve right away.'], tags:['italian','no-cook'], isVeg:true, isVegan:true, contains:['Gluten'], cuisine:'Italian', anchors:['bread','tomato','basil'] },
+    { name:'Edamame', emoji:'🫛', desc:'Boiled soy beans tossed with sea salt.', kcal:180, protein:14, cookTime:7, ingredients:['Edamame','Salt'], steps:['Boil edamame pods 5 min.','Drain.','Toss with sea salt.','Serve warm.'], tags:['asian','protein'], isVeg:true, isVegan:true, contains:['Soy'], cuisine:'Asian', anchors:['edamame','soy'] },
+    { name:'Apple Peanut Butter', emoji:'🍎', desc:'Crisp apple slices with peanut butter.', kcal:220, protein:7, cookTime:3, ingredients:['Apple','Peanut butter'], steps:['Slice apple into wedges.','Spoon peanut butter on the side.','Dip and eat.'], tags:['american','no-cook'], isVeg:true, isVegan:true, contains:['Peanuts'], cuisine:'American', anchors:['apple','peanut butter'] },
+    { name:'Trail Mix', emoji:'🥜', desc:'Mixed nuts, seeds and dried fruit.', kcal:260, protein:8, cookTime:2, ingredients:['Almonds','Cashews','Raisins','Sunflower seeds'], steps:['Combine all in a bowl.','Toss to mix.','Portion into snack-size servings.'], tags:['american','no-cook'], isVeg:true, isVegan:true, contains:['Nuts'], cuisine:'American', anchors:['almonds','cashews','nuts','raisins'], kidSafe:false },
   ],
   dinner: [
-    { name:'Dal Tadka', emoji:'🫘', desc:'Tempered lentil soup — comforting evening staple.', kcal:280, protein:14, cookTime:30, ingredients:['Toor dal','Onion','Tomato','Cumin','Garlic'], steps:['Pressure-cook dal until completely soft.','In a small pan heat ghee, add cumin, garlic and dried chilli.','Pour the sizzling tadka over the cooked dal.','Season and serve with steamed rice.'], tags:['indian','comfort'] },
-    { name:'Chicken Curry', emoji:'🍛', desc:'Classic home-style chicken curry.', kcal:400, protein:30, cookTime:40, ingredients:['Chicken','Onion','Tomato','Yogurt','Spices'], steps:['Marinate chicken in yogurt and spices for 20 min.','Cook onion-tomato-garlic masala until oil separates.','Add chicken, cook 10 min on medium.','Cover and simmer 15 min until tender; serve with rice.'], tags:['indian','protein'] },
-    { name:'Vegetable Stir-fry & Rice', emoji:'🥦', desc:'Crisp veg stir-fry over steamed rice.', kcal:340, protein:9, cookTime:25, ingredients:['Mixed veg','Garlic','Soy sauce','Sesame oil','Rice'], steps:['Cook rice and keep hot.','Heat oil on high, sauté garlic, add chopped veg.','Stir-fry 5 min, season with soy sauce.','Spoon over rice and finish with sesame oil.'], tags:['asian','quick'] },
-    { name:'Rajma Chawal', emoji:'🍛', desc:'Red kidney beans in tomato gravy with rice.', kcal:380, protein:15, cookTime:35, ingredients:['Rajma','Onion','Tomato','Ginger-garlic','Spices'], steps:['Cook soaked rajma in water until soft.','Make a thick onion-tomato-ginger-garlic masala.','Add rajma with cooking liquid; simmer 15 min.','Serve hot with steamed rice.'], tags:['indian','filling'] },
-    { name:'Veg Pulao', emoji:'🍚', desc:'Fragrant rice cooked with vegetables and whole spices.', kcal:330, protein:8, cookTime:25, ingredients:['Basmati rice','Mixed veg','Whole spices','Onion','Ghee'], steps:['Sauté whole spices and onion in ghee.','Add chopped veg, stir 3 min.','Add rinsed rice with 2x water and salt.','Cover, cook on low 15 min, fluff and serve.'], tags:['one-pot','indian'] },
-    { name:'Fish Curry & Rice', emoji:'🐟', desc:'Light tomato-based fish curry over rice.', kcal:340, protein:26, cookTime:25, ingredients:['Fish','Onion','Tomato','Coconut milk','Curry leaves'], steps:['Coat fish lightly in turmeric and salt.','Cook onion-tomato-curry-leaf masala.','Add a splash of coconut milk; gently slide in fish.','Simmer 8 min on low; serve over rice.'], tags:['coastal','protein'] },
+    // Indian veg
+    { name:'Dal Tadka', emoji:'🫘', desc:'Tempered lentil soup — comforting evening staple.', kcal:280, protein:14, cookTime:30, ingredients:['Toor dal','Onion','Tomato','Cumin','Garlic'], steps:['Pressure-cook dal until completely soft.','In a small pan heat ghee, add cumin, garlic and dried chilli.','Pour the sizzling tadka over the cooked dal.','Season and serve with steamed rice.'], tags:['indian','comfort'], isVeg:true, isVegan:false, contains:['Dairy'], cuisine:'Indian', anchors:['dal','lentils','onion','tomato'] },
+    { name:'Rajma Chawal', emoji:'🍛', desc:'Red kidney beans in tomato gravy with rice.', kcal:380, protein:15, cookTime:35, ingredients:['Rajma','Onion','Tomato','Ginger-garlic','Spices'], steps:['Cook soaked rajma in water until soft.','Make a thick onion-tomato-ginger-garlic masala.','Add rajma with cooking liquid; simmer 15 min.','Serve hot with steamed rice.'], tags:['indian','filling'], isVeg:true, isVegan:true, contains:[], cuisine:'Indian', anchors:['rajma','kidney beans','beans','onion','tomato'] },
+    { name:'Veg Pulao', emoji:'🍚', desc:'Fragrant rice cooked with vegetables and whole spices.', kcal:330, protein:8, cookTime:25, ingredients:['Basmati rice','Mixed veg','Whole spices','Onion','Ghee'], steps:['Sauté whole spices and onion in ghee.','Add chopped veg, stir 3 min.','Add rinsed rice with 2x water and salt.','Cover, cook on low 15 min, fluff and serve.'], tags:['indian','one-pot'], isVeg:true, isVegan:false, contains:['Dairy'], cuisine:'Indian', anchors:['rice','carrot','peas','beans'] },
+    { name:'Paneer Butter Masala', emoji:'🍛', desc:'Paneer cubes in a creamy tomato gravy.', kcal:420, protein:18, cookTime:30, ingredients:['Paneer','Tomato','Cream','Butter','Cashews'], steps:['Blend tomato with soaked cashews.','Cook the puree in butter until thick.','Add cream and seasonings.','Add paneer cubes, simmer 5 min and serve.'], tags:['indian','rich'], isVeg:true, isVegan:false, contains:['Dairy','Nuts'], cuisine:'Indian', anchors:['paneer','tomato'] },
+    { name:'Bhindi Masala', emoji:'🫛', desc:'Sautéed okra with onions and Indian spices.', kcal:220, protein:5, cookTime:25, ingredients:['Okra','Onion','Tomato','Cumin','Turmeric'], steps:['Slice okra into rounds.','Heat oil, splutter cumin, add onion and cook till golden.','Add tomato and spices, then okra.','Sauté uncovered 12 min until tender, serve with roti.'], tags:['indian','dry'], isVeg:true, isVegan:true, contains:[], cuisine:'Indian', anchors:['okra','bhindi','onion','tomato'] },
+    // Indian non-veg
+    { name:'Chicken Curry', emoji:'🍛', desc:'Classic home-style chicken curry.', kcal:400, protein:30, cookTime:40, ingredients:['Chicken','Onion','Tomato','Yogurt','Spices'], steps:['Marinate chicken in yogurt and spices for 20 min.','Cook onion-tomato-garlic masala until oil separates.','Add chicken, cook 10 min on medium.','Cover and simmer 15 min until tender; serve with rice.'], tags:['indian','protein'], isVeg:false, isVegan:false, contains:['Dairy'], cuisine:'Indian', anchors:['chicken'] },
+    { name:'Fish Curry & Rice', emoji:'🐟', desc:'Light tomato-based fish curry over rice.', kcal:340, protein:26, cookTime:25, ingredients:['Fish','Onion','Tomato','Coconut milk','Curry leaves'], steps:['Coat fish lightly in turmeric and salt.','Cook onion-tomato-curry-leaf masala.','Add a splash of coconut milk; gently slide in fish.','Simmer 8 min on low; serve over rice.'], tags:['indian','coastal'], isVeg:false, isVegan:false, contains:['Fish'], cuisine:'Indian', anchors:['fish'] },
+    // Italian
+    { name:'Pasta Marinara', emoji:'🍝', desc:'Pasta in a chunky tomato-basil sauce.', kcal:400, protein:13, cookTime:20, ingredients:['Pasta','Tomato','Garlic','Basil','Olive oil'], steps:['Boil pasta in salted water until al dente.','Sauté garlic in olive oil, add crushed tomato, simmer 10 min.','Add fresh basil and salt to taste.','Toss pasta in sauce and serve.'], tags:['italian','classic'], isVeg:true, isVegan:true, contains:['Gluten'], cuisine:'Italian', anchors:['pasta','tomato','garlic'] },
+    // American
+    { name:'Roast Chicken & Veg', emoji:'🍗', desc:'Pan-roasted chicken with seasoned vegetables.', kcal:480, protein:36, cookTime:45, ingredients:['Chicken','Potato','Carrot','Garlic','Rosemary'], steps:['Season chicken with salt, pepper, garlic and rosemary.','Arrange in a tray with chopped potato and carrot.','Roast at 200°C/400°F for 35 min until cooked through.','Rest 5 min before serving.'], tags:['american','protein'], isVeg:false, isVegan:false, contains:[], cuisine:'American', anchors:['chicken','potato','carrot'] },
+    { name:'Veggie Burger', emoji:'🍔', desc:'Bean patty in a bun with lettuce and cheese.', kcal:430, protein:18, cookTime:20, ingredients:['Bean patty','Bun','Lettuce','Tomato','Cheese'], steps:['Pan-fry bean patty 3 min each side.','Toast the bun.','Layer lettuce, patty, cheese and tomato.','Close and serve with sides.'], tags:['american','filling'], isVeg:true, isVegan:false, contains:['Gluten','Dairy'], cuisine:'American', anchors:['beans','lettuce','bun','bread'] },
+    // Asian
+    { name:'Vegetable Stir-fry & Rice', emoji:'🥦', desc:'Crisp veg stir-fry over steamed rice.', kcal:340, protein:9, cookTime:25, ingredients:['Mixed veg','Garlic','Soy sauce','Sesame oil','Rice'], steps:['Cook rice and keep hot.','Heat oil on high, sauté garlic, add chopped veg.','Stir-fry 5 min, season with soy sauce.','Spoon over rice and finish with sesame oil.'], tags:['asian','quick'], isVeg:true, isVegan:true, contains:['Soy','Sesame'], cuisine:'Asian', anchors:['rice','broccoli','carrot','bell pepper','peas'] },
+    { name:'Tofu Stir-fry', emoji:'🥢', desc:'Crispy tofu with greens in soy-ginger sauce.', kcal:360, protein:22, cookTime:20, ingredients:['Tofu','Bok choy','Ginger','Garlic','Soy sauce'], steps:['Press and cube tofu.','Pan-fry until crisp on all sides.','Stir-fry ginger, garlic and bok choy.','Combine, splash soy sauce, serve over rice.'], tags:['asian','vegan-protein'], isVeg:true, isVegan:true, contains:['Soy'], cuisine:'Asian', anchors:['tofu','bok choy','spinach'] },
+    // Mediterranean / Mexican
+    { name:'Greek Salad with Pita', emoji:'🥗', desc:'Cucumber, tomato, olives and feta with warm pita.', kcal:340, protein:12, cookTime:10, ingredients:['Cucumber','Tomato','Olives','Feta','Pita'], steps:['Chop cucumber and tomato into chunks.','Toss with olives and crumbled feta.','Dress with olive oil, lemon and oregano.','Serve with warm pita.'], tags:['mediterranean','no-cook'], isVeg:true, isVegan:false, contains:['Dairy','Gluten'], cuisine:'Mediterranean', anchors:['cucumber','tomato','feta','olives','pita'] },
+    { name:'Black Bean Tacos', emoji:'🌮', desc:'Soft tacos with seasoned black beans and salsa.', kcal:380, protein:14, cookTime:20, ingredients:['Tortilla','Black beans','Avocado','Salsa','Lime'], steps:['Warm beans with cumin, paprika and salt.','Heat tortillas on a dry pan.','Fill with beans, mashed avocado and salsa.','Squeeze lime and serve.'], tags:['mexican','filling'], isVeg:true, isVegan:true, contains:['Gluten'], cuisine:'Mexican', anchors:['black beans','beans','tortilla','avocado'] },
   ],
 };
 
@@ -445,14 +572,91 @@ function hashStr(s: string) {
   return Math.abs(h);
 }
 
-function buildFallbackMealsForDay(items: FoodItem[], mealType: string, safeName?: string, dayOffset = 0) {
+function ingredientMatchesFridge(ing: string, fridgeWords: Set<string>) {
+  const w = ing.toLowerCase().trim();
+  if (STAPLES.has(w)) return false;
+  for (const f of fridgeWords) {
+    if (w === f || w.includes(f) || f.includes(w)) return true;
+  }
+  return false;
+}
+
+function buildFallbackMealsForDay(
+  items: FoodItem[],
+  mealType: string,
+  safeName?: string,
+  dayOffset = 0,
+  cuisines: string[] = [],
+  dietaryFilters: string[] = [],
+  allergies: string[] = [],
+) {
   const slot = (['breakfast','lunch','snack','dinner'].includes(mealType) ? mealType : 'dinner') as 'breakfast'|'lunch'|'snack'|'dinner';
   const pool = SLOT_RECIPES[slot];
-  const hero = pickHeroItem(items);
-  // Rotate the pool by a stable hash so different slot/day combos pick different starting points.
-  const seedString = `${slot}|${dayOffset}|${hero?.name || 'none'}|${items.length}`;
-  const start = hashStr(seedString) % pool.length;
-  const picks = [pool[start], pool[(start + 1) % pool.length], pool[(start + 2) % pool.length]];
+
+  const dietsLower = dietaryFilters.map(d => d.toLowerCase());
+  const isVegan = dietsLower.some(d => d.includes('vegan'));
+  const isVegetarian = isVegan || dietsLower.some(d => d.includes('vegetarian')) || dietsLower.includes('jain');
+  const allergyLower = allergies.map(a => a.toLowerCase());
+
+  // Expand compass groupings to specific recipe cuisines.
+  const expanded = new Set<string>();
+  for (const c of cuisines) {
+    const lc = c.toLowerCase();
+    expanded.add(lc);
+    const compass = CUISINE_COMPASS.find(g => g.id.toLowerCase() === lc);
+    if (compass) compass.pulls.forEach(p => expanded.add(p));
+  }
+  const cuisinesLower = Array.from(expanded);
+
+  const fridgeWords = new Set(
+    items.flatMap(it => it.name.toLowerCase().split(/\s+/).filter(w => w.length >= 3))
+  );
+  // Also add the full lowercased item name so multi-word matches work.
+  items.forEach(it => fridgeWords.add(it.name.toLowerCase()));
+
+  // Hard filters: diet + allergies
+  let candidates = pool.filter(r => {
+    if (isVegan && !r.isVegan) return false;
+    if (isVegetarian && !r.isVeg) return false;
+    if (allergyLower.length && r.contains.some(c => allergyLower.includes(c.toLowerCase()))) return false;
+    return true;
+  });
+
+  // Soft filter: prefer recipes whose cuisine matches user prefs (Universal always passes).
+  if (cuisinesLower.length) {
+    const preferred = candidates.filter(r => {
+      const c = r.cuisine.toLowerCase();
+      return c === 'universal' || cuisinesLower.includes(c);
+    });
+    if (preferred.length >= 3) candidates = preferred;
+  }
+
+  if (!candidates.length) candidates = pool.filter(r => (isVegetarian ? r.isVeg : true)); // last resort
+
+  // Score: ingredient overlap with fridge + anchor present in fridge.
+  const scored = candidates.map(r => {
+    let score = 0;
+    let anchorHit = false;
+    for (const a of r.anchors) {
+      if (ingredientMatchesFridge(a, fridgeWords)) { anchorHit = true; score += 3; break; }
+    }
+    for (const ing of r.ingredients) {
+      if (ingredientMatchesFridge(ing, fridgeWords)) score += 1;
+    }
+    return { r, score, anchorHit };
+  });
+
+  // Prefer recipes whose anchor is in the fridge. If at least 3 such, use only those.
+  const anchorMatches = scored.filter(s => s.anchorHit);
+  const pickFrom = anchorMatches.length >= 3 ? anchorMatches : scored;
+
+  // Sort: highest score first, stable hash tiebreak so output is deterministic per slot/day.
+  pickFrom.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return hashStr(`${a.r.name}|${dayOffset}|${slot}`) - hashStr(`${b.r.name}|${dayOffset}|${slot}`);
+  });
+
+  const picks = pickFrom.slice(0, 3).map(s => s.r);
   return picks.map((r, idx) => ({
     name: r.name,
     emoji: r.emoji,
@@ -461,8 +665,11 @@ function buildFallbackMealsForDay(items: FoodItem[], mealType: string, safeName?
     kcal: r.kcal,
     protein: r.protein,
     mealType: slot,
-    usesExpiring: idx === 0 && !!hero,
-    safeFor: safeName ? [safeName] : [],
+    usesExpiring: idx === 0 && items.some(it => daysUntil(it.expiry) <= 3),
+    // Only mark a dish kid-safe when the recipe is actually appropriate for toddlers.
+    // Default kidSafe = true, but caffeinated drinks, whole nuts, very spicy or choking-hazard
+    // dishes set kidSafe: false explicitly.
+    safeFor: (r.kidSafe !== false) && safeName ? [safeName] : [],
     ingredients: r.ingredients,
     steps: r.steps,
     tags: r.tags,
@@ -778,11 +985,12 @@ export default function FridgeBee() {
         dislikes: m.dislikes,
       })),
     ];
-    const hiddenNames = new Set(
-      s.cookedMeals
+    const hiddenNames = new Set([
+      ...s.cookedMeals
         .filter(meal => Date.now() - new Date(meal.cookedAt).getTime() < 3 * 86400000)
-        .map(meal => meal.name.toLowerCase())
-    );
+        .map(meal => meal.name.toLowerCase()),
+      ...s.dislikedRecipes.map(n => n.toLowerCase()),
+    ]);
     let cancelled = false;
 
     async function loadMeals() {
@@ -811,7 +1019,9 @@ export default function FridgeBee() {
             const rotatedItems = [...s.items]
               .sort((a, b) => daysUntil(a.expiry) - daysUntil(b.expiry))
               .slice(meta.dayOffset);
-            dayMeals = buildFallbackMealsForDay(rotatedItems, mealPeriod, s.members.find(member => (member.age ?? 99) < 5)?.name, meta.dayOffset)
+            const householdAllergies = Array.from(new Set([...(s.allergies||[]), ...s.members.flatMap(m => m.allergies||[])]));
+            const householdDiets = Array.from(new Set([...(s.dietaryFilters||[]), ...s.members.flatMap(m => m.dietaryFilters||[])]));
+            dayMeals = buildFallbackMealsForDay(rotatedItems, mealPeriod, s.members.find(member => (member.age ?? 99) < 5)?.name, meta.dayOffset, s.cuisines, householdDiets, householdAllergies)
               .filter((meal: Meal) => !rollingExclude.has(meal.name.toLowerCase()));
           }
           dayMeals.forEach((meal: Meal) => rollingExclude.add(meal.name.toLowerCase()));
@@ -1014,32 +1224,117 @@ export default function FridgeBee() {
     );
 
     // ── Step 1: Quick fridge setup
+    const obCountry = s.country || detectCountry();
+    const localItemNames = QUICK_BY_COUNTRY[obCountry] || QUICK_BY_COUNTRY.US;
+    const localItems = localItemNames
+      .map(n => QUICK_ITEMS.find(it => it.name === n))
+      .filter((x): x is Omit<FoodItem,'id'|'added'> => Boolean(x));
     return (
       <div className="ob-wrap" style={{background:'var(--cr)'}}>
-        <div style={{padding:'28px 20px 20px', flexShrink:0}}>
-          <div style={{textAlign:'center', marginBottom:4, fontSize:32}}>🧊</div>
+        <div style={{padding:'24px 20px 12px', flexShrink:0}}>
+          <div style={{textAlign:'center', marginBottom:4, fontSize:28}}>🧊</div>
           <h2 style={{
-            fontFamily:'Fraunces, Georgia, serif', fontSize:26, fontWeight:500,
-            color:'var(--ink)', textAlign:'center', lineHeight:1.3, marginBottom:8,
+            fontFamily:'Fraunces, Georgia, serif', fontSize:42, fontWeight:600,
+            color:'var(--ink)', textAlign:'center', lineHeight:1.15, marginBottom:8,
+            letterSpacing:'-0.5px',
           }}>
             What&apos;s in your fridge{' '}
             <span style={{color:'var(--bee)', fontStyle:'italic'}}>right now?</span>
           </h2>
-          <p style={{color:'var(--mu)', fontSize:13, textAlign:'center', lineHeight:1.5, marginBottom:16}}>
-            Pick 4&ndash;5 things you bought recently.<br/>We&apos;ll tell you what to cook.
+          <p style={{color:'var(--mu)', fontSize:13, textAlign:'center', lineHeight:1.5, marginBottom:14}}>
+            Pick 4&ndash;5 things you bought recently. We&apos;ll tell you what to cook.
           </p>
-          <div style={{display:'flex', justifyContent:'center', gap:6, marginBottom:4}}>
+          <div style={{display:'flex', justifyContent:'center', gap:6}}>
             <div style={{width:24, height:5, borderRadius:3, background:'var(--bee)'}}/>
             <div style={{width:8,  height:5, borderRadius:3, background:'var(--bd)'}}/>
             <div style={{width:8,  height:5, borderRadius:3, background:'var(--bd)'}}/>
           </div>
         </div>
-        <div style={{flex:1, overflowY:'auto', padding:'0 20px 8px'}}>
-          <div style={{fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:10}}>
-            COMMON ITEMS — TAP TO ADD
+        <div style={{flex:1, overflowY:'auto', padding:'12px 20px 8px'}}>
+          {/* Diet preference row */}
+          <div style={{fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8}}>
+            DIET PREFERENCE
           </div>
-          <div style={{display:'flex', flexWrap:'wrap', gap:8, marginBottom:16}}>
-            {QUICK_ITEMS.map(it => {
+          <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:18}}>
+            {DIET_QUICK.map(d => {
+              const on = s.dietaryFilters.includes(d) || (d === 'Other' && s.dietaryFilters.some(f => !DIET_QUICK.includes(f)));
+              return (
+                <button key={d}
+                  onClick={() => {
+                    if (d === 'Other') return; // 'Other' is a marker — set in profile screen
+                    up({ dietaryFilters: on
+                      ? s.dietaryFilters.filter(f => f !== d)
+                      : [...s.dietaryFilters.filter(f => !['Vegan','Vegetarian'].includes(f) || f === d || (d !== 'Vegan' && d !== 'Vegetarian')), d]
+                    });
+                  }}
+                  style={{
+                    padding:'7px 14px', borderRadius:999, border:'1.5px solid',
+                    fontSize:13, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+                    borderColor: on ? 'var(--sage)' : 'var(--bd)',
+                    background:  on ? 'var(--sagel)' : 'var(--white)',
+                    color:       on ? 'var(--sage)' : 'var(--mu)',
+                  }}>
+                  {d}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* 6 common items based on user location */}
+          <div style={{fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8}}>
+            COMMON IN {(COUNTRY_CURRENCY[obCountry]?.name || obCountry).toUpperCase()} — TAP TO ADD
+          </div>
+          <div style={{display:'flex', flexWrap:'wrap', gap:8, marginBottom:18}}>
+            {localItems.map(it => {
+              const sel = obPicks.includes(it.name);
+              return (
+                <button key={it.name}
+                  onClick={()=>setObPicks(prev => sel ? prev.filter(n=>n!==it.name) : [...prev, it.name])}
+                  style={{
+                    display:'flex', alignItems:'center', gap:6,
+                    padding:'9px 14px', borderRadius:12, border:'1.5px solid',
+                    fontSize:14, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+                    transition:'all .12s',
+                    borderColor: sel ? 'var(--bee)' : 'var(--bd)',
+                    background:  sel ? 'var(--beel)' : 'var(--white)',
+                    color:       sel ? 'var(--beed)' : 'var(--ink)',
+                  }}>
+                  <span style={{fontSize:16}}>{it.emoji}</span>{it.name}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Cuisine compass */}
+          <div style={{fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8}}>
+            CUISINE COMPASS
+          </div>
+          <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:18}}>
+            {CUISINE_COMPASS.map(c => {
+              const on = s.cuisines.includes(c.id);
+              return (
+                <button key={c.id}
+                  onClick={() => up({ cuisines: on ? s.cuisines.filter(x => x !== c.id) : [...s.cuisines, c.id] })}
+                  style={{
+                    display:'flex', alignItems:'center', gap:6,
+                    padding:'7px 12px', borderRadius:999, border:'1.5px solid',
+                    fontSize:13, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+                    borderColor: on ? 'var(--bee)' : 'var(--bd)',
+                    background:  on ? 'var(--beel)' : 'var(--white)',
+                    color:       on ? 'var(--beed)' : 'var(--mu)',
+                  }}>
+                  <span style={{fontSize:15}}>{c.emoji}</span>{c.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* More items (collapsible — but for now, show below compass) */}
+          <div style={{fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8}}>
+            MORE COMMON ITEMS
+          </div>
+          <div style={{display:'flex', flexWrap:'wrap', gap:8, marginBottom:8}}>
+            {QUICK_ITEMS.filter(it => !localItemNames.includes(it.name)).map(it => {
               const sel = obPicks.includes(it.name);
               return (
                 <button key={it.name}
@@ -1226,7 +1521,21 @@ export default function FridgeBee() {
     setScanning(false);
   }
   function confirmParsed() {
-    parsed.forEach(it=>{ if(it.name) addItem({name:it.name,emoji:it.emoji||'📦',shelf:it.shelf||'fridge',category:it.category||'Other',qty:it.qty||1,unit:it.unit||'pcs',expiry:it.expiry||daysFromNow(7)}); });
+    const tally: Record<Shelf, number> = { fridge: 0, freezer: 0, pantry: 0 };
+    parsed.forEach(it => {
+      if (!it.name) return;
+      const sh = (it.shelf || 'fridge') as Shelf;
+      tally[sh] = (tally[sh] || 0) + 1;
+      addItem({ name: it.name, emoji: it.emoji || '📦', shelf: sh, category: it.category || 'Other', qty: it.qty || 1, unit: it.unit || 'pcs', expiry: it.expiry || daysFromNow(7) });
+    });
+    // Switch to the shelf tab where most items landed so user actually sees what was added.
+    const dominantShelf = (Object.entries(tally).sort((a, b) => b[1] - a[1])[0]?.[0] as Shelf) || 'fridge';
+    if (tally[dominantShelf] > 0) {
+      setShelf(dominantShelf);
+      setTab('fridge');
+      setSearch('');
+      setCatFilter('All');
+    }
     setParsed([]); setShowAdd(false); setVoiceText(''); setScanFile(null);
   }
 
@@ -1463,12 +1772,22 @@ export default function FridgeBee() {
         .filter(meal => Date.now() - new Date(meal.cookedAt).getTime() < 3 * 86400000)
         .map(meal => meal.name.toLowerCase())
     );
+    const dislikedSet = new Set(s.dislikedRecipes.map(n => n.toLowerCase()));
     const toddler = s.members.find(member => (member.age ?? 99) < 5);
     const safeName = toddler?.name || 'little one';
     const fallbackItems = [...(expiring.length ? expiring : s.items)]
       .sort((a, b) => daysUntil(a.expiry) - daysUntil(b.expiry));
-    const fallback: Meal[] = buildFallbackMealsForDay(fallbackItems, mealPeriod, safeName, 0);
-    const displayMeals = (meals.length > 0 ? meals : fallback).filter(meal => !hiddenMealNames.has(meal.name.toLowerCase()));
+    const fallbackHouseholdAllergies = Array.from(new Set([...(s.allergies||[]), ...s.members.flatMap(m => m.allergies||[])]));
+    const fallbackHouseholdDiets = Array.from(new Set([...(s.dietaryFilters||[]), ...s.members.flatMap(m => m.dietaryFilters||[])]));
+    const fallback: Meal[] = buildFallbackMealsForDay(fallbackItems, mealPeriod, safeName, 0, s.cuisines, fallbackHouseholdDiets, fallbackHouseholdAllergies);
+    const displayMeals = (meals.length > 0 ? meals : fallback).filter(meal => !hiddenMealNames.has(meal.name.toLowerCase()) && !dislikedSet.has(meal.name.toLowerCase()));
+    const markNotForMe = (recipeName: string) => {
+      const lower = recipeName.toLowerCase();
+      up({ dislikedRecipes: [...s.dislikedRecipes.filter(n => n.toLowerCase() !== lower), recipeName] });
+      setMeals(prev => prev.filter(m => m.name.toLowerCase() !== lower));
+      setPlannedDays(prev => prev.map(day => ({ ...day, meals: day.meals.filter(m => m.name.toLowerCase() !== lower) })));
+      showT(`"${recipeName}" hidden — won’t suggest again`);
+    };
     const refreshMeals = () => {
       const mealMembers = [
         ...(s.name || s.dietaryFilters.length || s.allergies.length ? [{
@@ -1522,11 +1841,11 @@ export default function FridgeBee() {
           </div>
           <div className="screen" style={{ flex:1, background:'var(--cr)', paddingBottom:100 }}>
           <div style={{ padding:'16px' }}>
-            {((recipeScreen.safeFor && recipeScreen.safeFor.length > 0) || toddler) && (
+            {(recipeScreen.safeFor && recipeScreen.safeFor.length > 0) && (
               <div style={{ background:'#DCFCE7', border:'1px solid #86A87A', borderRadius:16, padding:'12px 14px', marginBottom:12, display:'flex', alignItems:'center', gap:8 }}>
                 <span style={{ fontSize:18 }}>👶</span>
                 <div style={{ fontWeight:700, fontSize:13, color:'#14532D' }}>
-                  Safe for {(recipeScreen.safeFor && recipeScreen.safeFor[0]) || safeName} — mild, no choking hazards
+                  Safe for {recipeScreen.safeFor[0]} — mild, no choking hazards
                 </div>
               </div>
             )}
@@ -1778,12 +2097,21 @@ export default function FridgeBee() {
                         </div>
                       </div>
                       <p style={{ fontSize:13, color:'var(--mu)', lineHeight:1.55, marginBottom:14 }}>{topPick.description}</p>
-                      <button
-                        onClick={() => setRecipeScreen(topPick)}
-                        style={{ width:'100%', background:'#C94A3A', color:'#fff', border:'none', borderRadius:16, padding:'14px', fontSize:15, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
-                      >
-                        ▶ Open recipe
-                      </button>
+                      <div style={{ display:'flex', gap:8 }}>
+                        <button
+                          onClick={() => setRecipeScreen(topPick)}
+                          style={{ flex:1, background:'#C94A3A', color:'#fff', border:'none', borderRadius:16, padding:'14px', fontSize:15, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
+                        >
+                          ▶ Open recipe
+                        </button>
+                        <button
+                          onClick={() => markNotForMe(topPick.name)}
+                          title="Hide this recipe — won't suggest again"
+                          style={{ background:'var(--white)', color:'var(--mu)', border:'1.5px solid var(--bd)', borderRadius:16, padding:'14px 14px', fontSize:13, fontWeight:700, fontFamily:'inherit', cursor:'pointer', flexShrink:0 }}
+                        >
+                          ✕ Not for me
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <div style={{ background:'var(--white)', border:'1.5px solid var(--bd)', borderRadius:20, padding:'24px 18px', textAlign:'center', color:'var(--mu)', fontSize:13 }}>
@@ -1807,12 +2135,21 @@ export default function FridgeBee() {
                             </div>
                           </div>
                           <p style={{ fontSize:13, color:'var(--mu)', lineHeight:1.5, marginBottom:10 }}>{meal.description}</p>
-                          <button
-                            onClick={() => setRecipeScreen(meal)}
-                            style={{ width:'100%', background:'#C94A3A', color:'#fff', border:'none', borderRadius:14, padding:'12px', fontSize:14, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
-                          >
-                            ▶ Open recipe
-                          </button>
+                          <div style={{ display:'flex', gap:8 }}>
+                            <button
+                              onClick={() => setRecipeScreen(meal)}
+                              style={{ flex:1, background:'#C94A3A', color:'#fff', border:'none', borderRadius:14, padding:'12px', fontSize:14, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
+                            >
+                              ▶ Open recipe
+                            </button>
+                            <button
+                              onClick={() => markNotForMe(meal.name)}
+                              title="Hide this recipe — won't suggest again"
+                              style={{ background:'var(--white)', color:'var(--mu)', border:'1.5px solid var(--bd)', borderRadius:14, padding:'12px', fontSize:12, fontWeight:700, fontFamily:'inherit', cursor:'pointer', flexShrink:0 }}
+                            >
+                              ✕ Not for me
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -1844,8 +2181,8 @@ export default function FridgeBee() {
                         <span style={{ fontSize:12, color:'var(--mu)' }}>🔥 {meal.kcal} kcal</span>
                         <span style={{ fontSize:12, color:'#C94A3A', fontWeight:700 }}>💪 {meal.protein}g P</span>
                       </div>
-                      {((meal.safeFor && meal.safeFor.length > 0) || toddler) && (
-                        <div style={{ marginTop:10, fontSize:12, color:'#15803D' }}>👶 {((meal.safeFor && meal.safeFor[0]) || safeName)}-safe</div>
+                      {(meal.safeFor && meal.safeFor.length > 0) && (
+                        <div style={{ marginTop:10, fontSize:12, color:'#15803D' }}>👶 {meal.safeFor[0]}-safe</div>
                       )}
                     </div>
                   </div>
@@ -1858,12 +2195,21 @@ export default function FridgeBee() {
                       </span>
                     ))}
                   </div>
-                  <button
-                    onClick={() => setRecipeScreen(meal)}
-                    style={{ width:'100%', background:'#C94A3A', color:'#fff', border:'none', borderRadius:16, padding:'14px', fontSize:15, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
-                  >
-                    ▶ Cook this
-                  </button>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <button
+                      onClick={() => setRecipeScreen(meal)}
+                      style={{ flex:1, background:'#C94A3A', color:'#fff', border:'none', borderRadius:16, padding:'14px', fontSize:15, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
+                    >
+                      ▶ Cook this
+                    </button>
+                    <button
+                      onClick={() => markNotForMe(meal.name)}
+                      title="Hide this recipe — won't suggest again"
+                      style={{ background:'var(--white)', color:'var(--mu)', border:'1.5px solid var(--bd)', borderRadius:16, padding:'14px 16px', fontSize:13, fontWeight:700, fontFamily:'inherit', cursor:'pointer', flexShrink:0 }}
+                    >
+                      ✕ Not for me
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -2495,20 +2841,37 @@ export default function FridgeBee() {
               ? <div style={{textAlign:'center',color:'var(--mu)',fontSize:13,padding:'10px 0'}}>No members added yet</div>
               : <div style={{display:'flex',flexDirection:'column',gap:8}}>
                   {s.members.map(mb=>(
-                    <div key={mb.id} style={{display:'flex',alignItems:'center',gap:12,padding:'10px',background:'var(--wa)',borderRadius:10,cursor:'pointer'}}
-                      onClick={()=>{setEditMember(mb);setShowMember(true);}}>
-                      <div style={{width:36,height:36,borderRadius:18,background:'var(--beel)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>
-                        {mb.isKid?'👧':'👤'}
-                      </div>
-                      <div style={{flex:1}}>
-                        <div style={{fontWeight:700,fontSize:14,color:'var(--ink)'}}>{mb.name}</div>
-                        <div style={{fontSize:11,color:'var(--mu)'}}>
-                          {mb.age!==undefined?`Age ${mb.age}`:'Age not set'}
-                          {mb.allergies.length>0?` · ${mb.allergies.length} allergy`:''}
-                          {mb.dietaryFilters.length>0?` · ${mb.dietaryFilters.join(', ')}`:''}
+                    <div key={mb.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px',background:'var(--wa)',borderRadius:10}}>
+                      <div onClick={()=>{setEditMember(mb);setShowMember(true);}}
+                        style={{display:'flex',alignItems:'center',gap:12,flex:1,cursor:'pointer',minWidth:0}}>
+                        <div style={{width:36,height:36,borderRadius:18,background:'var(--beel)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>
+                          {mb.isKid?'👧':'👤'}
                         </div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontWeight:700,fontSize:14,color:'var(--ink)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{mb.name}</div>
+                          <div style={{fontSize:11,color:'var(--mu)'}}>
+                            {mb.age!==undefined?`Age ${mb.age}`:'Age not set'}
+                            {mb.allergies.length>0?` · ${mb.allergies.length} allergy`:''}
+                            {mb.dietaryFilters.length>0?` · ${mb.dietaryFilters.join(', ')}`:''}
+                          </div>
+                        </div>
+                        <span style={{color:'var(--mu)',fontSize:20,flexShrink:0}}>›</span>
                       </div>
-                      <span style={{color:'var(--mu)',fontSize:20}}>›</span>
+                      <button
+                        onClick={(e)=>{
+                          e.stopPropagation();
+                          if (!confirm(`Remove ${mb.name} from household?`)) return;
+                          up({members:s.members.filter(x=>x.id!==mb.id)});
+                          if (activeProfile===mb.id) setActiveProfile('me');
+                          showT(`${mb.name} removed`);
+                        }}
+                        title={`Remove ${mb.name}`}
+                        aria-label={`Remove ${mb.name}`}
+                        style={{width:30,height:30,borderRadius:8,background:'#FFF5F5',border:'1px solid #F4C8C1',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0,padding:0}}>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#C0392B" strokeWidth="2" strokeLinecap="round">
+                          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+                        </svg>
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -2590,64 +2953,69 @@ export default function FridgeBee() {
     if (!editItem) return null;
     const d = daysUntil(editItem.expiry);
     const currency = COUNTRY_CURRENCY[s.country]?.symbol || '$';
+    const estimatedCost = editItem.cost ?? estimatePrice(editItem.name, s.country);
     return (
       <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) setEditItem(null); }}>
-        <div className="modal-sheet" style={{ maxHeight:'85%' }}>
+        <div className="modal-sheet" style={{ maxHeight:'80%' }}>
           <div className="modal-handle"/>
-          <div className="modal-body" style={{ padding:'16px 20px 36px' }}>
-            {/* Header row */}
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:16 }}>
-              <h2 style={{ fontSize:26, color:'var(--ink)', fontFamily:'Fraunces,Georgia,serif', fontWeight:500 }}>{editItem.name}</h2>
+          <div className="modal-body" style={{ padding:'14px 16px 28px' }}>
+            {/* Compact header: emoji + name + delete on one row */}
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:14 }}>
+              <div style={{ width:56, height:56, borderRadius:14, background: CAT_TINT[editItem.category] || 'var(--wa)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:32, flexShrink:0 }}>
+                {editItem.emoji}
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <h2 style={{ fontSize:22, color:'var(--ink)', fontFamily:'Fraunces,Georgia,serif', fontWeight:500, lineHeight:1.15 }}>{editItem.name}</h2>
+                <div style={{ fontSize:11, color:'var(--mu)', marginTop:4, display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+                  <span>{editItem.qty}{editItem.unit}</span>
+                  <span>·</span>
+                  <span>{d < 0 ? 'Expired' : d === 0 ? 'Today' : `${d} days`}</span>
+                  <span>·</span>
+                  <span style={{ color:'var(--ink)', fontWeight:600 }}>{currency}</span>
+                  <input
+                    type="number" min="0" step="0.1"
+                    value={editItem.cost ?? ''}
+                    placeholder={estimatedCost.toFixed(1)}
+                    onChange={e => {
+                      const v = parseFloat(e.target.value);
+                      const nextCost = isNaN(v) ? undefined : v;
+                      up({ items: s.items.map(i => i.id === editItem.id ? { ...i, cost: nextCost } : i) });
+                      setEditItem({ ...editItem, cost: nextCost });
+                    }}
+                    style={{ width:62, padding:'2px 6px', borderRadius:6, border:'1px solid var(--bd)', fontSize:11, fontFamily:'inherit', outline:'none', background:'var(--white)', color:'var(--ink)', textAlign:'right' }}
+                    aria-label="Edit cost"
+                  />
+                  <span style={{ color:'var(--mu)' }}>(tap to edit)</span>
+                </div>
+              </div>
               <button onClick={() => { removeItem(editItem.id); setEditItem(null); }}
-                style={{ width:36, height:36, borderRadius:10, background:'var(--wa)', border:'1.5px solid var(--bd)', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" strokeWidth="2" strokeLinecap="round">
+                style={{ width:34, height:34, borderRadius:10, background:'var(--wa)', border:'1.5px solid var(--bd)', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', flexShrink:0 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" strokeWidth="2" strokeLinecap="round">
                   <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
                 </svg>
               </button>
             </div>
 
-            {/* Large emoji card */}
-            <div style={{ background: CAT_TINT[editItem.category] || 'var(--wa)', borderRadius:18, padding:'28px', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:20 }}>
-              <span style={{ fontSize:72 }}>{editItem.emoji}</span>
-            </div>
-
-            {/* Stats row */}
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:0, marginBottom:20, borderBottom:'1px solid var(--bd)', paddingBottom:16 }}>
-              {[
-                { label:'QUANTITY', val:`${editItem.qty}${editItem.unit}` },
-                { label:'EXPIRES',  val: d < 0 ? 'Expired' : d === 0 ? 'Today' : `${d} days` },
-                { label:'COST',     val: editItem.cost ? `${currency}${editItem.cost.toFixed(1)}` : '—' },
-              ].map(s2 => (
-                <div key={s2.label} style={{ textAlign:'center', padding:'0 8px' }}>
-                  <div style={{ fontSize:9, fontWeight:800, color:'var(--mu)', letterSpacing:'.6px', marginBottom:4 }}>{s2.label}</div>
-                  <div style={{ fontSize:16, fontWeight:800, color:'var(--ink)' }}>{s2.val}</div>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ marginBottom:20 }}>
-              <div style={{ fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.7px', marginBottom:10 }}>EDIT QUANTITY</div>
-              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            {/* Quantity stepper — compact */}
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.6px', marginBottom:6 }}>HOW MUCH IS LEFT</div>
+              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                 <button
                   onClick={() => {
                     const nextQty = Math.max(1, editItem.qty - 1);
                     up({ items: s.items.map(i => i.id === editItem.id ? { ...i, qty: nextQty } : i) });
                     setEditItem({ ...editItem, qty: nextQty });
                   }}
-                  style={{ width:42, height:42, borderRadius:12, border:'1.5px solid var(--bd)', background:'var(--white)', fontSize:22, cursor:'pointer', fontFamily:'inherit', color:'var(--ink)' }}
-                >
-                  −
-                </button>
+                  style={{ width:38, height:38, borderRadius:10, border:'1.5px solid var(--bd)', background:'var(--white)', fontSize:20, cursor:'pointer', fontFamily:'inherit', color:'var(--ink)' }}
+                >−</button>
                 <input
-                  type="number"
-                  min="1"
-                  value={editItem.qty}
+                  type="number" min="1" value={editItem.qty}
                   onChange={e => {
                     const nextQty = Math.max(1, parseFloat(e.target.value) || 1);
                     up({ items: s.items.map(i => i.id === editItem.id ? { ...i, qty: nextQty } : i) });
                     setEditItem({ ...editItem, qty: nextQty });
                   }}
-                  style={{ flex:1, padding:'11px 12px', borderRadius:12, border:'1.5px solid var(--bd)', fontSize:16, fontWeight:700, fontFamily:'inherit', outline:'none', background:'var(--white)', textAlign:'center', color:'var(--ink)' }}
+                  style={{ flex:1, padding:'9px 12px', borderRadius:10, border:'1.5px solid var(--bd)', fontSize:15, fontWeight:700, fontFamily:'inherit', outline:'none', background:'var(--white)', textAlign:'center', color:'var(--ink)' }}
                 />
                 <button
                   onClick={() => {
@@ -2655,67 +3023,17 @@ export default function FridgeBee() {
                     up({ items: s.items.map(i => i.id === editItem.id ? { ...i, qty: nextQty } : i) });
                     setEditItem({ ...editItem, qty: nextQty });
                   }}
-                  style={{ width:42, height:42, borderRadius:12, border:'1.5px solid var(--bd)', background:'var(--white)', fontSize:22, cursor:'pointer', fontFamily:'inherit', color:'var(--ink)' }}
-                >
-                  +
-                </button>
+                  style={{ width:38, height:38, borderRadius:10, border:'1.5px solid var(--bd)', background:'var(--white)', fontSize:20, cursor:'pointer', fontFamily:'inherit', color:'var(--ink)' }}
+                >+</button>
               </div>
-              <div style={{ marginTop:8, fontSize:12, color:'var(--mu)' }}>Adjust how much you actually have left.</div>
             </div>
 
-            {/* Edit Cost */}
-            <div style={{ marginBottom:20 }}>
-              <div style={{ fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.7px', marginBottom:10 }}>EDIT COST ({COUNTRY_CURRENCY[s.country]?.symbol || '$'})</div>
-              <input
-                type="number"
-                min="0"
-                step="0.1"
-                value={editItem.cost ?? ''}
-                placeholder="Enter cost…"
-                onChange={e => {
-                  const v = parseFloat(e.target.value);
-                  const nextCost = isNaN(v) ? undefined : v;
-                  up({ items: s.items.map(i => i.id === editItem.id ? { ...i, cost: nextCost } : i) });
-                  setEditItem({ ...editItem, cost: nextCost });
-                }}
-                style={{ width:'100%', padding:'12px', borderRadius:12, border:'1.5px solid var(--bd)', fontSize:16, fontWeight:700, fontFamily:'inherit', outline:'none', background:'var(--white)', color:'var(--ink)' }}
-              />
-              <div style={{ marginTop:6, fontSize:12, color:'var(--mu)' }}>Cost per item. Estimated from market rates if left blank.</div>
-            </div>
-
-            {/* Edit Expiry */}
-            <div style={{ marginBottom:20 }}>
-              <div style={{ fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.7px', marginBottom:10 }}>EDIT EXPIRY DATE</div>
-              <input
-                type="date"
-                value={editItem.expiry}
-                onChange={e => {
-                  const nextExpiry = e.target.value;
-                  up({ items: s.items.map(i => i.id === editItem.id ? { ...i, expiry: nextExpiry } : i) });
-                  setEditItem({ ...editItem, expiry: nextExpiry });
-                }}
-                style={{ width:'100%', padding:'12px', borderRadius:12, border:'1.5px solid var(--bd)', fontSize:15, fontFamily:'inherit', outline:'none', background:'var(--white)', color:'var(--ink)' }}
-              />
-            </div>
-
-            {/* What to do */}
-            <div style={{ fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.7px', marginBottom:10 }}>WHAT TO DO</div>
-            <div style={{ display:'flex', flexDirection:'column', gap:10, marginBottom:16 }}>
-              {/* Use some */}
-              <button onClick={() => {
-                const nq = Math.max(0, editItem.qty - 1);
-                up({ items: s.items.map(i => i.id === editItem.id ? {...i, qty: nq} : i) });
-                if (nq === 0) { markUsed(editItem.id); setEditItem(null); }
-                else { setEditItem({...editItem, qty: nq}); showT(`${editItem.name} updated`); }
-              }} style={{ width:'100%', padding:'14px', borderRadius:14, border:'2px solid #EF4444', background:'#FFF5F5', fontWeight:700, fontSize:15, cursor:'pointer', fontFamily:'inherit', color:'#EF4444' }}>
-                Use some · minus 1{editItem.unit}
-              </button>
-              {/* Ate it */}
+            {/* Action buttons */}
+            <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:12 }}>
               <button onClick={() => { markUsed(editItem.id); setEditItem(null); }}
-                style={{ width:'100%', padding:'14px', borderRadius:14, border:'none', background:'#2D6A4F', fontWeight:700, fontSize:15, cursor:'pointer', fontFamily:'inherit', color:'#fff' }}>
-                ✓ Ate it
+                style={{ width:'100%', padding:'12px', borderRadius:12, border:'none', background:'#2D6A4F', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:'inherit', color:'#fff' }}>
+                ✓ Ate it / Used it all
               </button>
-              {/* Threw it */}
               <button onClick={() => {
                 const cat = editItem.category || 'Other';
                 up({
@@ -2724,17 +3042,13 @@ export default function FridgeBee() {
                   wastedByCategory: {...s.wastedByCategory, [cat]: (s.wastedByCategory[cat]||0) + 1},
                 });
                 setEditItem(null); showT(`Removed ${editItem.name}`);
-              }} style={{ width:'100%', padding:'14px', borderRadius:14, border:'2px solid #EF4444', background:'#FFF5F5', fontWeight:700, fontSize:15, cursor:'pointer', fontFamily:'inherit', color:'#EF4444' }}>
+              }} style={{ width:'100%', padding:'12px', borderRadius:12, border:'1.5px solid #EF4444', background:'#FFF5F5', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:'inherit', color:'#EF4444' }}>
                 ✕ Threw it / wasted
               </button>
             </div>
 
-            {/* Added by */}
-            <div style={{ padding:'12px 14px', background:'var(--wa)', borderRadius:12 }}>
-              <div style={{ fontSize:9, fontWeight:800, color:'var(--mu)', letterSpacing:'.6px', marginBottom:4 }}>ADDED BY</div>
-              <div style={{ fontSize:14, fontWeight:600, color:'var(--ink)' }}>
-                {editItem.addedBy === 'scan' ? '📷 Scan' : editItem.addedBy === 'voice' ? '🎤 Voice' : '✍️ Manual'}
-              </div>
+            <div style={{ fontSize:11, color:'var(--mu)', textAlign:'center' }}>
+              Added via {editItem.addedBy === 'scan' ? '📷 scan' : editItem.addedBy === 'voice' ? '🎤 voice' : '✍️ manual'} · expiry auto-set from category
             </div>
           </div>
         </div>
