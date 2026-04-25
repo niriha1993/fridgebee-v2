@@ -781,14 +781,26 @@ function buildFallbackMealsForDay(
     return { r, score, anchorHit };
   });
 
-  // Hard requirement: the recipe's primary anchor MUST be in the fridge.
-  // No more "Mango Lassi" suggestions when the user has no mango.
-  // If the fridge is empty, fall back to anything in the slot pool so the user
-  // sees something rather than an empty screen.
+  // Prefer recipes whose anchor ingredient is actually in the fridge.
+  // If 0 anchor matches but other ingredients overlap, fall back to those (so
+  // the page isn't empty when the user has 20 items but none of them are a
+  // listed anchor). Only return recipes with non-zero ingredient overlap when
+  // the fridge has items — empty fridge falls back to the whole slot pool so
+  // first-run users still see ideas.
   const anchorMatches = scored.filter(s => s.anchorHit);
-  const pickFrom = anchorMatches.length > 0
-    ? anchorMatches
-    : (fridgeWords.size === 0 ? scored : []);
+  let pickFrom: typeof scored;
+  if (anchorMatches.length > 0) {
+    pickFrom = anchorMatches;
+  } else if (fridgeWords.size === 0) {
+    pickFrom = scored;
+  } else {
+    // Fridge has items but no recipe anchor matches. Show recipes that at
+    // least share one ingredient (overlap-only), else nothing.
+    pickFrom = scored.filter(s => s.score > 0);
+    // Last resort — if even overlap is zero, show top 3 from the slot pool
+    // so the user sees something rather than a blank screen.
+    if (pickFrom.length === 0) pickFrom = scored.slice(0, 3);
+  }
 
   // Sort: highest score first, stable hash tiebreak so output is deterministic per slot/day.
   pickFrom.sort((a, b) => {
@@ -1163,6 +1175,9 @@ export default function FridgeBee() {
   // Fetch meals when meals tab is active
   useEffect(() => {
     if (tab !== 'meals' || s.items.length === 0) return;
+    // Clear previous-period meals immediately so the fallback for the NEW period
+    // renders without a 5-15s delay while Claude generates fresh ones.
+    setMeals([]);
     const mealMembers = [
       ...(s.name || s.dietaryFilters.length || s.allergies.length ? [{
         name: s.name || 'You',
