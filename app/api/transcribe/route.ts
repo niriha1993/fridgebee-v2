@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import Anthropic from '@anthropic-ai/sdk';
 
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || process.env.Claude_API_Key || process.env.CLAUDE_API_KEY || '';
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 
 const KNOWN_ITEMS: Array<{ alias: string; canonical: string; qty: number; unit: string; category: string; emoji: string }> = [
@@ -326,71 +328,100 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ items: [...directItems, ...extras], transcript });
     }
 
-    const completion = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_KEY}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o',
-        max_tokens: 700,
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content: `You extract grocery items from speech or text.
+    // Multi-language item-extraction prompt (ported from fridgebee.app/mise — battle-tested
+     // on Hindi, Tamil, Malay, Singlish, Spanish, Arabic mixed input).
+    const extractionPrompt = `You extract grocery items from speech or text.
 Return a JSON object with key "items" — an array of objects:
 { "item_name": string, "quantity": number, "unit": string, "category": string, "emoji": string }
 
 Rules:
-- item_name: keep one clean shopper-friendly name only. Never combine two groceries into one item.
-- If the user says "bhindi pumpkin", "onion tomato", "milk eggs bread", or a similar list without commas, split them into separate grocery items.
-- quantity: numeric and practical. Infer realistic household defaults when quantity is omitted.
+- item_name: preserve the name in the language spoken. If the user said "Tamatar", use "Tamatar". If they said "Tomato", use "Tomato". Keep regional names authentic.
+- quantity: numeric. Do NOT mindlessly default to 1 piece when the natural quantity differs.
 - unit: "g" | "kg" | "ml" | "L" | "pcs" | "loaf" | "bunch" | "packet" | "dozen"
 - category: "Produce" | "Dairy" | "Protein" | "Grains" | "Snacks" | "Beverages" | "Condiments" | "Frozen" | "Other"
 - emoji: one relevant emoji
-- Ignore filler words like "bought", "add", "need", "some", "aur", "und", "lah", "can"
+- Split lists like "bhindi pumpkin onion tomato" or "milk eggs bread" into separate grocery items even without commas.
+- Ignore filler words like "bought", "got", "picked up", "some", "aur", "y", "und", "lah", "can".
 - The user may mix languages or local dialects — still extract the groceries correctly.
 
-Infer defaults when quantity is missing:
-- bhindi / okra: 500 g
-- pumpkin / kaddu: 1 kg
-- tomato / tamatar: 4 pcs
-- onion / pyaaz: 500 g
-- potato / aloo: 1 kg
-- spinach / palak / keerai: 1 bunch
+Infer practical household defaults when quantity is missing:
+- tomato / tamatar / thakkali: 4 pcs
+- onion / pyaaz / vengayam / bawang: 500 g
+- potato / aloo / urulaikilangu / kentang: 1 kg
+- spinach / keerai / palak: 1 bunch
 - milk / doodh / paal / susu: 1 L
 - eggs / muttai / telur / anda: 12 pcs
-- bread / loaf: 1 loaf
-- gobi / cauliflower: 1 pcs
+- bread / roti loaf: 1 loaf
+- ginger / adrak / inji / halia: 100 g
+- garlic / lehsun / poondu / bawang putih: 100 g
+- cauliflower / gobi / phool gobi: 1 pcs
 - paneer: 200 g
-- coriander / dhania: 1 bunch
-- garlic / lehsun: 100 g
-- ginger / adrak: 100 g
+- coriander / dhania / cilantro: 1 bunch
+- bhindi / okra: 500 g
+- pumpkin / kaddu: 1 kg
 
-Locale hint: ${lang}`,
-          },
-          {
-            role: 'user',
-            content: `Extract grocery items from: "${transcript}"`,
-          },
-        ],
-      }),
-    });
+Hindi: doodh=Milk, paneer=Paneer, aloo=Potato, pyaaz=Onion, dahi=Curd/Yogurt, atta=Flour, chawal=Rice, dal=Lentils, tamatar=Tomato, adrak=Ginger, lehsun=Garlic, sabzi=Vegetables, gosht=Meat, murgh=Chicken, machli=Fish, besan=Chickpea flour, maida=White flour, methi=Fenugreek, lauki=Bottle gourd, karela=Bitter gourd, baingan=Eggplant, gobi=Cauliflower, bhindi=Okra.
+Tamil: thakkali=Tomato, paal=Milk, thayir=Curd/Yogurt, muttai=Eggs, vengayam=Onion, urulaikilangu=Potato, poondu=Garlic, inji=Ginger, keerai=Spinach, arisi=Rice, paruppu=Dal, kozhi=Chicken, meen=Fish, muttakose=Cabbage.
+Malay/Singlish: susu=Milk, telur=Eggs, bawang=Onion, kentang=Potato, halia=Ginger, bawang putih=Garlic, sayur=Vegetables, ikan=Fish, ayam=Chicken, roti=Bread, kopi=Coffee, teh=Tea. Singlish: "buy one packet spinach lah", "need milk and eggs can?".
+Spanish: leche=Milk, huevos=Eggs, pollo=Chicken, carne=Meat, arroz=Rice, frijoles=Beans, tomate=Tomato, cebolla=Onion, ajo=Garlic, pan=Bread, queso=Cheese, manzana=Apple, plátano=Banana, papa=Potato.
+Arabic: laban=Milk, bayd=Eggs, dajaj=Chicken, lahm=Meat, ruz=Rice, khubz=Bread, jibn=Cheese, bassal=Onion, toom=Garlic.
 
-    if (!completion.ok) {
-      // OpenAI failed (quota / auth / rate limit). Don't drop the user's input —
-      // fall back to direct matches, then to whitespace-split as "Other".
+User locale: ${lang}.
+
+Return ONLY a JSON object — no markdown, no commentary.`;
+
+    let extractedRaw = '';
+
+    // Prefer Anthropic for the extraction call (their Sonnet 4.6 handles this prompt well).
+    if (ANTHROPIC_KEY) {
+      try {
+        const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
+        const r = await client.messages.create({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 700,
+          system: extractionPrompt,
+          messages: [{ role: 'user', content: `Extract grocery items from: "${transcript}"` }],
+        });
+        const tb = r.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+        extractedRaw = tb?.text ?? '';
+      } catch { /* fall through to OpenAI */ }
+    }
+
+    if (!extractedRaw && OPENAI_KEY) {
+      const completion = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          max_tokens: 700,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: extractionPrompt },
+            { role: 'user', content: `Extract grocery items from: "${transcript}"` },
+          ],
+        }),
+      });
+      if (completion.ok) {
+        const data = await completion.json();
+        extractedRaw = data.choices?.[0]?.message?.content || '';
+      }
+    }
+
+    if (!extractedRaw) {
+      // Both LLMs unavailable. Don't drop the user's input.
       if (directItems.length) return NextResponse.json({ items: directItems, transcript });
       const fallback = whitespaceFallbackItems(transcript);
       if (fallback.length) return NextResponse.json({ items: fallback, transcript, hint: 'AI parser is unavailable — items added without categories.' });
-      const errText = await completion.text().catch(() => '');
-      return NextResponse.json({ error: errText || 'Could not parse input.' }, { status: 500 });
+      return NextResponse.json({ error: 'Could not parse input.' }, { status: 500 });
     }
 
-    const data = await completion.json();
-    const content = JSON.parse(data.choices?.[0]?.message?.content || '{"items":[]}');
+    // Strip markdown fencing if model returned it; extract first {...} object.
+    const cleaned = extractedRaw.trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '');
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    const content = (firstBrace >= 0 && lastBrace > firstBrace)
+      ? JSON.parse(cleaned.slice(firstBrace, lastBrace + 1))
+      : { items: [] };
     let items = (content.items || []).map(normalizeItem).filter((item: { name: string }) => item.name);
     // Prefer direct matches if the model under-counted (e.g., returned 1 item for 4-word input).
     if (items.length < directItems.length) items = directItems;

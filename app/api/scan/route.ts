@@ -61,9 +61,14 @@ function extractJsonObject(raw: string) {
 }
 
 function buildPrompt(currencyLabel: string, isReceiptRetry: boolean) {
+  // Prompt structure ported from the previous-generation fridgebee.app (mise) where
+  // it was battle-tested. Two paths: full classifier prompt (default) and a
+  // receipt-only retry prompt (used when the first call returns 0 items).
   if (isReceiptRetry) {
-    return `This is likely a grocery receipt or order screenshot.
-Read it like OCR and extract every FOOD or GROCERY line item you can find.
+    return `This is a grocery receipt or order screenshot.
+Read it like OCR and extract every FOOD or GROCERY line item with its EXACT printed price.
+
+PRICE EXTRACTION — read each printed price digit-by-digit. Use the exact decimal as printed (e.g. 4.50, 14.50, 9.20). The line-item price is usually at the right edge of the same line as the item. On receipts that show "1 PCS@ 14.500    14.50" the SECOND number is the line total — use that. If a price is unclear, set price to 0 — DO NOT guess. Currency is ${currencyLabel}.
 
 Return JSON:
 {
@@ -74,11 +79,10 @@ Return JSON:
 }
 
 Rules:
-- Ignore totals, taxes, delivery, discounts, promos, and non-food items
-- If the receipt shows shorthand names, normalize them to clear shopper-friendly food names
+- Ignore totals, GST, taxes, delivery, discounts, promos, and non-food items
+- Normalize shorthand: "GRB GHEE 1LT" → "Ghee", "MEIJI FRESH MILK 2LT" → "Milk", "L/POOL PARMESAN" → "Parmesan", "NANAK PANEER CUBED 400G" → "Paneer", "IND/GAT CLAS BASMATI 2KG" → "Basmati Rice"
 - If quantity is unclear, default to 1
-- Use prices printed on the receipt when visible in ${currencyLabel}
-- It is better to return many likely grocery items than to miss obvious receipt lines
+- Better to return many likely grocery items than to miss obvious receipt lines
 
 Return ONLY the JSON object — no markdown, no commentary.`;
   }
@@ -86,44 +90,60 @@ Return ONLY the JSON object — no markdown, no commentary.`;
 
 This image could be:
 - A receipt or order confirmation — extract every line item
-- A grocery app screenshot
-- A fridge or pantry shelf photo
-- Items in plastic bags, cling wrap, or containers
+- A grocery app screenshot (FoodPanda, GrabMart, Swiggy, Blinkit, Amazon Fresh, NTUC, etc.)
+- A FRIDGE or pantry shelf photo — identify everything visible
+- Items in PLASTIC BAGS, cling wrap, or containers — look through packaging
 
-For shelf and fridge photos:
+FRIDGE / SHELF PHOTO RULES (critical):
 - Identify items even through plastic bags, cling wrap, or packaging
-- Use visual cues like shape, colour, size, and visible text on packaging.
-- Be generous and practical. It is better to identify likely grocery items than miss them.
-- If you see multiple groceries in one bag, list each separately.
+- Use visual cues: shape, colour, size, any visible text or logos on packaging
+- Green leafy bundle in bag = vegetables (spinach/coriander/lettuce/herbs/methi)
+- Red/orange round item = tomatoes or capsicum
+- Yellow curved item = banana
+- White liquid in clear bottle = milk
+- Orange root vegetable = carrot
+- Purple/white bulb = onion or garlic
+- Brown wrapped parcel = meat or paneer
+- Eggs in tray or bowl = eggs
+- Clear bag with green = cucumber or zucchini
+- Be GENEROUS — better to identify imprecisely than miss an item entirely
+- If you see multiple items in one bag, list each separately
+
+PRICE EXTRACTION:
+- If RECEIPT or SCREENSHOT, use the ACTUAL printed price in ${currencyLabel}. Read digit-by-digit. The line-item price is at the right edge of the same line. On lines like "1 PCS@ 14.500    14.50" the SECOND number is the line total — use that. If unclear, set price to 0.
+- If FRIDGE PHOTO, estimate realistic ${currencyLabel} retail price for that quantity at supermarket level (FairPrice/RedMart for SG, BigBasket/Blinkit for IN, US chains for US). If unsure, set price to 0 rather than guess wildly.
 
 Return JSON:
 {
   "items": [
     { "item_name": string, "quantity": number, "unit": string, "category": string, "emoji": string, "price": number }
   ],
+  "store": string | null,
   "image_type": "receipt" | "screenshot" | "fridge_photo" | "other"
 }
 
 Rules:
-- item_name: clean title-case singular
+- item_name: clean title-case singular (e.g. "Fresh Spinach", "Whole Milk", "Chicken Breast")
 - quantity: numeric, default 1 if unclear
 - unit: "g" | "kg" | "ml" | "L" | "pcs" | "loaf" | "bunch" | "packet" | "dozen" | "box"
 - category: "Produce" | "Dairy" | "Protein" | "Grains" | "Snacks" | "Beverages" | "Condiments" | "Frozen" | "Other"
 - emoji: one relevant emoji
-- If this is a receipt or grocery screenshot, use the actual printed item price in ${currencyLabel} when possible.
-Skip delivery fees, totals, promotions, and non-food items.
+- Skip non-food items, delivery fees, totals, GST, taxes, and promotions
 
+If nothing identifiable: { "items": [], "store": null, "image_type": "other" }
 Return ONLY the JSON object — no markdown, no commentary.`;
 }
 
 async function runWithAnthropic(base64: string, mime: string, prompt: string) {
-  // Anthropic Messages API supports image input. Cast mime to the SDK union.
+  // Sonnet 4.6 over Haiku 4.5 for scan: Haiku misses small receipt prices,
+  // Sonnet OCRs them digit-accurately. Cost difference is ~$0.004 per scan
+  // (negligible) for vastly better receipt-price fidelity.
   const supported = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
   const mediaType = supported.includes(mime) ? mime : 'image/jpeg';
   const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
   const response = await client.messages.create({
-    model: 'claude-haiku-4-5',
-    max_tokens: 1800,
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2000,
     messages: [
       {
         role: 'user',

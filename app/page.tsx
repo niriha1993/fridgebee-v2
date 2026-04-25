@@ -476,7 +476,8 @@ function normalizeParsedItem(it: ParsedInputItem, country: string): Partial<Food
     qty: it.qty ?? it.quantity ?? 1,
     unit: it.unit || 'pcs',
     expiry: it.expiry || daysFromNow(CATEGORY_EXPIRY[category] || 7),
-    cost: typeof it.price === 'number' ? it.price : estimatePrice(name, country),
+    // 0 means "model couldn't read the price" — fall back to estimate. Only trust >0 prices.
+    cost: typeof it.price === 'number' && it.price > 0 ? it.price : estimatePrice(name, country),
   };
 }
 
