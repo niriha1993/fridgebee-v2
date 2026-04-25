@@ -29,6 +29,11 @@ interface AppState {
   wastedByCategory: Record<string, number>;
   dislikedRecipes: string[];
   paywallClicks: Record<string, number>;
+  // Personal price memory — keyed by lowercased canonical item name. Stores the
+  // most recent price the user actually paid in their location (set when a
+  // receipt scan returns a printed price). Used as the highest-priority source
+  // when estimating cost for a manual/voice add later.
+  priceHistory: Record<string, { cost: number; unit: string; updatedAt: string }>;
   restockItems: RestockItem[];
   restockRegion: string;
 }
@@ -157,10 +162,25 @@ const ITEM_PRICES_USD: Record<string, number> = {
   'Mozzarella':4,'Feta':5,'Tortilla':2,'Pita':2.5,'Bun':1,'Hummus':3,
 };
 const FX: Record<string,number> = { US:1, IN:83, SG:1.35, GB:0.79, AU:1.53, MY:4.7, PK:280, AE:3.67 };
-// Local-currency price for an item. Tries the curated lookup first
-// (handles aliases + quantity scaling), then falls back to the legacy
-// USD × FX estimate so existing callers still get a number.
-function estimatePrice(name: string, country: string, quantity = 1, unit = 'pcs'): number {
+// Local-currency price for an item. Priority:
+//   1. priceHistory — what the user actually paid (per-unit, last seen).
+//   2. Curated table (priceForItem) — country-aware market price for the item.
+//   3. USD × FX estimate — legacy fallback so callers always get a number.
+function estimatePrice(
+  name: string,
+  country: string,
+  quantity = 1,
+  unit = 'pcs',
+  priceHistory?: Record<string, { cost: number; unit: string; updatedAt: string }>,
+): number {
+  if (priceHistory) {
+    const hist = priceHistory[name.toLowerCase()];
+    if (hist && hist.cost > 0) {
+      // history stores cost-per-unit; scale to current quantity.
+      const total = hist.cost * (quantity || 1);
+      return parseFloat(total.toFixed(2));
+    }
+  }
   const looked = priceForItem({ name, quantity, unit, country });
   if (typeof looked === 'number' && looked > 0) return looked;
   const base = ITEM_PRICES_USD[name] ?? 2;
@@ -396,6 +416,7 @@ const INIT: AppState = {
   wastedByCategory:{},
   dislikedRecipes:[],
   paywallClicks:{},
+  priceHistory:{},
   restockItems:[], restockRegion:'',
 };
 
@@ -422,6 +443,7 @@ function sanitizeState(input: Partial<AppState> | null | undefined): AppState | 
     wastedByCategory: input.wastedByCategory && typeof input.wastedByCategory === 'object' ? input.wastedByCategory : {},
     dislikedRecipes: Array.isArray(input.dislikedRecipes) ? input.dislikedRecipes : [],
     paywallClicks: input.paywallClicks && typeof input.paywallClicks === 'object' ? input.paywallClicks : {},
+    priceHistory: input.priceHistory && typeof input.priceHistory === 'object' ? input.priceHistory : {},
   };
 }
 
@@ -502,7 +524,11 @@ function expiryDaysForName(name: string, category: string): number {
   return CATEGORY_EXPIRY[category] || 7;
 }
 
-function normalizeParsedItem(it: ParsedInputItem, country: string): Partial<FoodItem> {
+function normalizeParsedItem(
+  it: ParsedInputItem,
+  country: string,
+  priceHistory?: Record<string, { cost: number; unit: string; updatedAt: string }>,
+): Partial<FoodItem> {
   const rawName = (it.name || it.item_name || '').trim();
   const name = rawName
     ? rawName.split(/\s+/).map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ')
@@ -521,8 +547,8 @@ function normalizeParsedItem(it: ParsedInputItem, country: string): Partial<Food
     qty,
     unit,
     expiry: it.expiry || daysFromNow(expiryDaysForName(name, category)),
-    // 0 means "model couldn't read the price" — fall back to estimate. Only trust >0 prices.
-    cost: typeof it.price === 'number' && it.price > 0 ? it.price : estimatePrice(name, country, qty, unit),
+    // 0 means "model couldn't read the price" — fall back to history → curated → estimate.
+    cost: typeof it.price === 'number' && it.price > 0 ? it.price : estimatePrice(name, country, qty, unit, priceHistory),
   };
 }
 
@@ -1358,7 +1384,7 @@ export default function FridgeBee() {
         // Per-item expiry override (mango = 5 days, methi = 3, eggs = 21, ...) instead
         // of the blunt category-default 7 days.
         expiry: daysFromNow(expiryDaysForName(name, category)),
-        cost: estimatePrice(name, country, 1, 'pcs'),
+        cost: estimatePrice(name, country, 1, 'pcs', s.priceHistory),
       };
     });
     up({ onboarded:true, items, country });
@@ -1612,12 +1638,25 @@ export default function FridgeBee() {
     const cntAfter = addCount + list.length;
     setAddCount(cntAfter);
     localStorage.setItem('fb_add_cnt', String(cntAfter));
-    // Soft Pro upsell after the user has added a lot of items — opens the Kafe
-    // checkout in a new tab but still adds the items so the flow isn't blocked.
-    // (The old behaviour was to hard-stop adds at >30 which broke the experience.)
     const today = new Date().toISOString().slice(0,10);
     const stamped: FoodItem[] = list.map(it => ({ ...it, id: uid(), added: today }));
-    setS(prev => ({ ...prev, items: [...prev.items, ...stamped] }));
+    // Build price-history updates: only items where a real cost > 0 was supplied
+    // (scan-with-printed-price, or user-edited cost). Per-unit so 200g cheese vs
+    // 1kg cheese don't conflict.
+    const priceUpdates: Record<string, { cost: number; unit: string; updatedAt: string }> = {};
+    const nowIso = new Date().toISOString();
+    for (const it of stamped) {
+      if (typeof it.cost === 'number' && it.cost > 0) {
+        // Store cost-per-base-unit so future qty's scale correctly. Normalise to per-unit.
+        const perUnit = it.qty > 0 ? it.cost / it.qty : it.cost;
+        priceUpdates[it.name.toLowerCase()] = { cost: perUnit, unit: it.unit, updatedAt: nowIso };
+      }
+    }
+    setS(prev => ({
+      ...prev,
+      items: [...prev.items, ...stamped],
+      priceHistory: { ...prev.priceHistory, ...priceUpdates },
+    }));
     showT(list.length === 1 ? `Added ${list[0].name} ✓` : `Added ${list.length} items ✓`);
   }
   function removeItem(id: string) {
@@ -1711,7 +1750,7 @@ export default function FridgeBee() {
       const transcriptStr = (d.transcript || '').trim();
       if (transcriptStr) setVoiceText(transcriptStr);
       if (d.items?.length) {
-        const normalized = d.items.map((it: ParsedInputItem) => normalizeParsedItem(it, s.country));
+        const normalized = d.items.map((it: ParsedInputItem) => normalizeParsedItem(it, s.country, s.priceHistory));
         if (normalized.length === 1 && fallbackSplitItems(cleaned).length > 1) {
           setParsed(toEditableFallbackItems(cleaned, s.country));
           setVoiceLoading(false);
@@ -1738,7 +1777,7 @@ export default function FridgeBee() {
     setScanning(true);
     try {
       const d = await requestParsedItems({ image: scanFile });
-      if (d.items?.length) setParsed(d.items.map((it: ParsedInputItem) => normalizeParsedItem(it, s.country)));
+      if (d.items?.length) setParsed(d.items.map((it: ParsedInputItem) => normalizeParsedItem(it, s.country, s.priceHistory)));
       else showT('Could not read — try a clearer photo');
     } catch (error) { showT(error instanceof Error ? error.message : 'Scan failed'); }
     setScanning(false);
@@ -2298,15 +2337,18 @@ export default function FridgeBee() {
         )}
 
         <div style={{ padding:'16px' }}>
+          {/* Slim 'AI is generating' indicator that doesn't block the page —
+              fallback recipes show immediately, fresh ones replace when Claude responds. */}
+          {mealsLoading && s.items.length > 0 && (
+            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', marginBottom:12, background:'#FFF9EF', border:'1px solid #F5C44E', borderRadius:12, fontSize:12, color:'var(--mu)' }}>
+              <div style={{ animation:'bee-bob 1.2s ease-in-out infinite', display:'inline-block' }}><BeeSVG size={20}/></div>
+              <span>Finding fresh ideas with AI… showing quick picks below in the meantime.</span>
+            </div>
+          )}
           {s.items.length === 0 ? (
             <div style={{ textAlign:'center', padding:'40px 0', color:'var(--mu)' }}>
               <div style={{ fontSize:40, marginBottom:12 }}>🍽️</div>
               <div style={{ fontWeight:700 }}>Add items to your fridge first</div>
-            </div>
-          ) : mealsLoading ? (
-            <div style={{ textAlign:'center', padding:'40px 0' }}>
-              <div style={{ animation:'bee-bob 1.5s ease-in-out infinite', display:'inline-block', marginBottom:12 }}><BeeSVG size={48}/></div>
-              <div style={{ fontSize:14, color:'var(--mu)', fontWeight:600 }}>Finding meal ideas…</div>
             </div>
           ) : mealsViewMode === 'days' ? (
             (() => {
@@ -3512,7 +3554,7 @@ export default function FridgeBee() {
         const data = await requestParsedItems({ text: inputText });
         if (data.items?.length) {
           const withPrices = data.items.map((it: ParsedInputItem) => ({
-            ...normalizeParsedItem(it, s.country),
+            ...normalizeParsedItem(it, s.country, s.priceHistory),
             addedBy: 'manual' as const,
           }));
           if (withPrices.length === 1 && fallbackSplitItems(inputText).length > 1) {
@@ -3777,7 +3819,7 @@ export default function FridgeBee() {
                           try {
                             const d = await requestParsedItems({ image: scanFile });
                             if (d.items?.length) {
-                              const withPrices = d.items.map((it: ParsedInputItem) => ({ ...normalizeParsedItem(it, s.country), addedBy:'scan' as const }));
+                              const withPrices = d.items.map((it: ParsedInputItem) => ({ ...normalizeParsedItem(it, s.country, s.priceHistory), addedBy:'scan' as const }));
                               setParsed([]); setParsedEditable(withPrices);
                             } else showT('Could not read — try a clearer photo');
                           } catch (error) { showT(error instanceof Error ? error.message : 'Scan failed'); }
