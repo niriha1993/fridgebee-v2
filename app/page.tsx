@@ -768,7 +768,35 @@ function buildFallbackMealsForDay(
 
   if (!candidates.length) candidates = pool.filter(r => (isVegetarian ? r.isVeg : true)); // last resort
 
-  // Score: ingredient overlap with fridge + anchor present in fridge.
+  // Map fridge items by lowercased word → days-until-expiry, so we can boost
+  // recipes that use items going bad soonest.
+  const expiryByWord = new Map<string, number>();
+  for (const item of items) {
+    const days = daysUntil(item.expiry);
+    for (const w of item.name.toLowerCase().split(/\s+/)) {
+      const prev = expiryByWord.get(w);
+      if (prev === undefined || days < prev) expiryByWord.set(w, days);
+    }
+    expiryByWord.set(item.name.toLowerCase(), days);
+  }
+  // Smallest days-until-expiry across fridge ingredients in this recipe.
+  // Lower (sooner) = more urgent.
+  function recipeUrgency(ings: string[]): number {
+    let best = Infinity;
+    for (const ing of ings) {
+      const lc = ing.toLowerCase();
+      if (STAPLES.has(lc)) continue;
+      for (const [w, d] of expiryByWord) {
+        if (lc === w || lc.includes(w) || w.includes(lc)) {
+          if (d < best) best = d;
+        }
+      }
+    }
+    return best;
+  }
+
+  // Score: ingredient overlap with fridge + anchor present + urgency boost
+  // for recipes that actually use a soon-to-expire item.
   const scored = candidates.map(r => {
     let score = 0;
     let anchorHit = false;
@@ -778,7 +806,13 @@ function buildFallbackMealsForDay(
     for (const ing of r.ingredients) {
       if (ingredientMatchesFridge(ing, fridgeWords)) score += 1;
     }
-    return { r, score, anchorHit };
+    // Urgency: soonest-expiring fridge ingredient used by this recipe.
+    // ≤2 days: +5  ·  ≤4 days: +3  ·  ≤7 days: +1.  Long-shelf items add nothing.
+    const urgency = recipeUrgency([...(r.anchors || []), ...r.ingredients]);
+    if (urgency <= 2) score += 5;
+    else if (urgency <= 4) score += 3;
+    else if (urgency <= 7) score += 1;
+    return { r, score, anchorHit, urgency };
   });
 
   // Prefer recipes whose anchor ingredient is actually in the fridge.
@@ -807,8 +841,8 @@ function buildFallbackMealsForDay(
     return hashStr(`${a.r.name}|${dayOffset}|${slot}`) - hashStr(`${b.r.name}|${dayOffset}|${slot}`);
   });
 
-  const picks = pickFrom.slice(0, 3).map(s => s.r);
-  return picks.map((r, idx) => ({
+  const top = pickFrom.slice(0, 3);
+  return top.map(({ r, urgency }) => ({
     name: r.name,
     emoji: r.emoji,
     description: r.desc,
@@ -816,7 +850,9 @@ function buildFallbackMealsForDay(
     kcal: r.kcal,
     protein: r.protein,
     mealType: slot,
-    usesExpiring: idx === 0 && items.some(it => daysUntil(it.expiry) <= 3),
+    // The badge now reflects this recipe specifically — whether IT uses a
+    // soon-to-expire fridge item, not just whether anything is expiring.
+    usesExpiring: typeof urgency === 'number' && urgency <= 3,
     // Only mark a dish kid-safe when the recipe is actually appropriate for toddlers.
     // Default kidSafe = true, but caffeinated drinks, whole nuts, very spicy or choking-hazard
     // dishes set kidSafe: false explicitly.

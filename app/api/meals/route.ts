@@ -54,6 +54,11 @@ STRICT RULES:
   * Pantry staples you MAY assume are available even if not listed: salt, oil, basic spices (cumin, turmeric, chilli, pepper), water, sugar.
   * Onion, tomato, garlic, ginger are common but NOT staples — only use them if listed.
   * If the fridge is sparse and no real recipe fits, return FEWER than the requested count (or even an empty array) rather than fabricate recipes the user can't make.
+- EXPIRY PRIORITY (also strict): the fridge list shows each item as "Name (qty unit, expires in Nd)". You MUST:
+  * Lead with recipes built around the items that expire SOONEST. If methi expires in 3d and lauki in 7d, the FIRST recipe must use methi (Methi Paneer, Aloo Methi, Methi Thepla, etc.) — not lauki.
+  * Sort the returned array so position 0 is the most-urgent dish (uses an item expiring within 3 days), position 1 next-most-urgent, and so on.
+  * If multiple items are expiring on the same day, prefer the one most central to the recipe (the "hero" ingredient).
+  * Items expiring TODAY or tomorrow trump everything else — even cuisine match.
 - DIETARY RULES (non-negotiable, enforce strictly):
   * If "Vegetarian" is in dietary preferences → NO chicken, fish, seafood, meat. Eggs are allowed only if no eggs allergy.
   * If "Vegan" is in dietary preferences → NO animal products at all (no dairy, no eggs, no honey, no fish, no meat).
