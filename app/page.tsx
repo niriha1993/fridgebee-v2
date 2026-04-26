@@ -1,6 +1,7 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
 import { priceForItem } from '../lib/prices';
+import { subscribePush, unsubscribePush, sendTestPush, isIOSSafariBrowserTab, getPushPermission, getPushDiagnostics } from '../lib/push-client';
 import type { Session, User } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
 
@@ -12,6 +13,16 @@ interface FoodItem {
   added: string; expiry: string;
   cost?: number;
   addedBy?: 'manual' | 'voice' | 'scan';
+  // Same `batchId` for every item entered together (one scan / one voice burst /
+  // one manual save). Lets the Fridge tab group additions into receipt-style
+  // history cards. Optional for backward-compat with older items.
+  batchId?: string;
+  // Full timestamp so two batches on the same date sort correctly and we can
+  // show "10 min ago" or "Apr 19, 2:34pm" rather than a bare date.
+  addedAtIso?: string;
+  // Optional source label e.g. "Mustafa" / "NTUC" extracted from the scanned
+  // receipt header. Filled when /api/scan returns one; blank otherwise.
+  sourceLabel?: string;
 }
 interface Member {
   id: string; name: string; age?: number; isKid: boolean;
@@ -29,6 +40,16 @@ interface AppState {
   wastedByCategory: Record<string, number>;
   dislikedRecipes: string[];
   paywallClicks: Record<string, number>;
+  // Pro subscription state. Set true once a Kafe purchase webhook lands
+  // (or manually via the beta toggle in Profile for testing).
+  isPro: boolean;
+  // Per-day AI recipe quota for Free users. Stamped with today's local date so
+  // it resets at midnight in the user's timezone. Free cap = FREE_AI_RECIPES_PER_DAY.
+  aiRecipesUsed: { date: string; count: number };
+  // ISO date the user finished onboarding. Drives the 7-day welcome grace
+  // (unlimited AI before the daily cap kicks in). Empty string for legacy
+  // users; the cap migration falls back to the earliest item.added date.
+  joinedAt: string;
   // Personal price memory — keyed by lowercased canonical item name. Stores the
   // most recent price the user actually paid in their location (set when a
   // receipt scan returns a printed price). Used as the highest-priority source
@@ -106,13 +127,16 @@ const EMOJIS: Record<string, string> = {
 };
 const UNITS = ['pcs','g','kg','ml','L','cups','tbsp','tsp','lbs','oz'];
 const ALLERGY_OPTIONS = ['Gluten','Dairy','Eggs','Nuts','Peanuts','Soy','Fish','Shellfish','Sesame'];
-const DIETARY_OPTIONS = ['Vegetarian','Vegan','Halal','Kosher','Low-carb','Keto','Paleo'];
+// All available diet tags. Default for everyone (incl. Singapore) is omnivore —
+// pork, beef, alcohol-cooked dishes are all available unless the user explicitly
+// picks a restriction. Halal removes pork + alcohol; "Non-halal" is an explicit
+// opt-in for users who actively want pork/Char Siu/Bak Kut Teh-style dishes.
+const DIETARY_OPTIONS = ['Vegetarian','Vegan','Pescatarian','Eggetarian','No beef','Halal','Non-halal','Kosher','Gluten-free','Dairy-free','Nut-free'];
 const KID_FILTERS = ['Spicy','Whole nuts','Raw honey','Choking hazards','Excess salt'];
 
-const MEAL_PERIODS: Array<{ id: 'breakfast'|'lunch'|'snack'|'dinner'; label: string; time: string; emoji: string }> = [
+const MEAL_PERIODS: Array<{ id: 'breakfast'|'lunch'|'dinner'; label: string; time: string; emoji: string }> = [
   { id:'breakfast', label:'Breakfast', time:'7–9 AM', emoji:'☀️' },
   { id:'lunch', label:'Lunch', time:'12–2 PM', emoji:'🌤️' },
-  { id:'snack', label:'Snack', time:'4–5 PM', emoji:'🍎' },
   { id:'dinner', label:'Dinner', time:'6–8 PM', emoji:'🌙' },
 ];
 const NOTIF_OPTIONS = [
@@ -162,6 +186,23 @@ const ITEM_PRICES_USD: Record<string, number> = {
   'Mozzarella':4,'Feta':5,'Tortilla':2,'Pita':2.5,'Bun':1,'Hummus':3,
 };
 const FX: Record<string,number> = { US:1, IN:83, SG:1.35, GB:0.79, AU:1.53, MY:4.7, PK:280, AE:3.67 };
+// Per-country sanity ceiling on a single fridge item estimate. Anything above
+// this and we know the qty/unit was misread (e.g. "french beans" parsed as
+// 250 kg → 1000 SGD). We clamp to a believable default rather than ship junk.
+const PRICE_SANITY_CAP: Record<string, number> = {
+  US: 60, GB: 50, AU: 80, SG: 80, MY: 250, IN: 1500, PK: 5000, AE: 220,
+};
+function clampPrice(country: string, value: number): number {
+  const cap = PRICE_SANITY_CAP[country] || 60;
+  if (value > cap) {
+    // Over the cap — fall back to a conservative single-unit estimate so the
+    // fridge total stays sane.
+    const fxFallback = (FX[country] ?? 1) * 2;
+    return parseFloat(fxFallback.toFixed(2));
+  }
+  return value;
+}
+
 // Local-currency price for an item. Priority:
 //   1. priceHistory — what the user actually paid (per-unit, last seen).
 //   2. Curated table (priceForItem) — country-aware market price for the item.
@@ -178,14 +219,14 @@ function estimatePrice(
     if (hist && hist.cost > 0) {
       // history stores cost-per-unit; scale to current quantity.
       const total = hist.cost * (quantity || 1);
-      return parseFloat(total.toFixed(2));
+      return clampPrice(country, parseFloat(total.toFixed(2)));
     }
   }
   const looked = priceForItem({ name, quantity, unit, country });
-  if (typeof looked === 'number' && looked > 0) return looked;
+  if (typeof looked === 'number' && looked > 0) return clampPrice(country, looked);
   const base = ITEM_PRICES_USD[name] ?? 2;
   const rate = FX[country] ?? 1;
-  return parseFloat((base * rate).toFixed(2));
+  return clampPrice(country, parseFloat((base * rate).toFixed(2)));
 }
 
 const INPUT_ALIASES = [
@@ -211,6 +252,79 @@ function daysUntil(iso: string) {
 }
 function expiryColor(d: number) { return d <= 2 ? 'var(--red)' : d <= 5 ? '#92400E' : 'var(--sage)'; }
 function expiryBg(d: number)    { return d <= 2 ? 'var(--rl)'  : d <= 5 ? 'var(--al)'  : 'var(--sagel)'; }
+// AI returns ingredients as "noun qty unit" (e.g. "poha 1 cup", "onion 1 medium",
+// "1/2 tsp mustard seeds"). For the FROM YOUR FRIDGE chip we only want the noun
+// part — strip leading/trailing numeric tokens and known unit words, then title-case.
+const RECIPE_UNIT_TOKENS = new Set([
+  'cup','cups','tsp','tsps','teaspoon','teaspoons','tbsp','tbsps','tablespoon','tablespoons',
+  'oz','ounce','ounces','g','gm','gms','gram','grams','kg','kgs','kilo','kilogram','kilograms',
+  'ml','l','lt','lts','liter','liters','litre','litres',
+  'lb','lbs','pound','pounds',
+  'pinch','pinches','dash','dashes','handful','handfuls',
+  'clove','cloves','sprig','sprigs','slice','slices','piece','pieces','pcs','pc',
+  'can','cans','tin','tins','packet','packets','pack','packs','jar','jars','bottle','bottles',
+  'small','medium','large','whole','half','whole','fresh','dried','frozen','cooked','raw','ripe',
+  'head','heads','bunch','bunches','sheet','sheets','stick','sticks','strip','strips',
+  'cube','cubes','knob','knobs','sprinkle','splash','drop','drops','to','taste','of','for','garnish',
+]);
+// Fuzzy match a recipe name against the user's dislike list. Handles spelling
+// variants ("Veg Pulao" vs "Veg Pulav"), prefix/suffix differences ("Pasta
+// Pomodoro" vs "Tomato Pasta Pomodoro"), and word-stem variants. Returns true
+// if the recipe should be hidden.
+function isRecipeDisliked(recipeName: string, disliked: string[]): boolean {
+  if (!disliked || disliked.length === 0) return false;
+  const norm = (s: string) =>
+    s.toLowerCase()
+      .replace(/[^a-z0-9 ]/g, '')
+      // Treat trailing 'a'/'o'/'e' as interchangeable to handle pulao/pulav,
+      // halwa/halva, samosa/samosaa style variants.
+      .replace(/(\w)[aoe]\b/g, '$1')
+      .trim();
+  const r = norm(recipeName);
+  if (!r) return false;
+  for (const dRaw of disliked) {
+    const d = norm(dRaw);
+    if (!d) continue;
+    if (r === d) return true;
+    if (r.includes(d) || d.includes(r)) return true;
+    // Word-token overlap — if 60%+ of the dislike's significant words appear
+    // in the recipe name (or vice-versa), treat as same dish.
+    const dWords = d.split(/\s+/).filter(w => w.length >= 3);
+    const rWords = r.split(/\s+/).filter(w => w.length >= 3);
+    if (dWords.length === 0) continue;
+    const rText = ' ' + rWords.join(' ') + ' ';
+    const hits = dWords.filter(w => rText.includes(w)).length;
+    if (hits / dWords.length >= 0.6 && hits >= 2) return true;
+    // Also catch single-hero matches: if the dish has a unique hero noun
+    // (e.g. "pulav" / "pulao") and that noun appears in recipe, drop.
+    for (const dw of dWords) {
+      if (dw.length >= 5 && rWords.some(rw => rw === dw || rw.startsWith(dw) || dw.startsWith(rw))) return true;
+    }
+  }
+  return false;
+}
+
+function cleanIngredientName(raw: string): string {
+  if (!raw) return '';
+  // Remove parenthetical clarifications like "(optional)" or "(2-inch piece)".
+  const noParen = raw.replace(/\([^)]*\)/g, ' ');
+  const tokens = noParen
+    .split(/[\s,]+/)
+    .map(t => t.trim())
+    .filter(Boolean);
+  const kept = tokens.filter(t => {
+    // Drop pure numeric / fractional / range tokens like 1, 1/2, 1.5, 2-3, ½.
+    if (/^[\d¼½¾⅓⅔⅛⅜⅝⅞]+([./-][\d¼½¾⅓⅔⅛⅜⅝⅞]+)?$/.test(t)) return false;
+    if (/^\d+[a-z]+$/i.test(t)) return false; // 100g, 200ml combined
+    if (RECIPE_UNIT_TOKENS.has(t.toLowerCase())) return false;
+    return true;
+  });
+  const cleaned = (kept.length ? kept.join(' ') : tokens.join(' ')).trim();
+  if (!cleaned) return raw.trim();
+  // Title-case the first letter of the first word; leave the rest as-is so
+  // multi-word names like "curry leaves" render naturally.
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
 async function normalizeScanImage(file: File) {
   if (typeof window === 'undefined' || !file.type.startsWith('image/')) return file;
 
@@ -286,18 +400,48 @@ const CUISINE_COMPASS: Array<{ id: string; emoji: string; label: string; pulls: 
   { id: 'Latin',         emoji: '🌮', label: 'Latin',         pulls: ['mexican'] },
 ];
 
-// Diet preference quick-toggles shown during onboarding (subset of DIETARY_OPTIONS).
-const DIET_QUICK = ['Vegetarian','Vegan','Halal','Other'];
+// Default cuisine ordering per country. Local cuisine surfaces first, then the
+// most relevant adjacent options. Falls back to alphabetical if country is unknown.
+const COUNTRY_CUISINE_ORDER: Record<string, string[]> = {
+  IN: ['Indian','East Asian','Mediterranean','Western','Latin'],
+  PK: ['Indian','Mediterranean','East Asian','Western','Latin'],
+  SG: ['East Asian','Indian','Western','Mediterranean','Latin'],
+  MY: ['East Asian','Indian','Western','Mediterranean','Latin'],
+  AE: ['Mediterranean','Indian','Western','East Asian','Latin'],
+  US: ['Western','Mediterranean','East Asian','Latin','Indian'],
+  GB: ['Western','Mediterranean','Indian','East Asian','Latin'],
+  AU: ['Western','East Asian','Mediterranean','Indian','Latin'],
+};
+
+function sortedCuisineCompass(country: string) {
+  const order = COUNTRY_CUISINE_ORDER[country] || COUNTRY_CUISINE_ORDER.US;
+  const idx = (id: string) => {
+    const i = order.indexOf(id);
+    return i === -1 ? 999 : i;
+  };
+  return [...CUISINE_COMPASS].sort((a, b) => idx(a.id) - idx(b.id));
+}
+
+// Diet preference quick-toggles shown during onboarding. Order matters — the
+// most-common picks come first. "No restrictions" isn't a button (it's the
+// default state when nothing is selected). We removed "Other" because it
+// wasn't doing anything functionally.
+const DIET_QUICK = ['Vegetarian','Vegan','Halal','Non-halal','No beef','Pescatarian'];
 
 // Cuisine-aware quick suggestions for the onboarding "What's in your fridge?" grid.
 // FRIDGE-only — fresh items that actually live in the cold compartment. Pantry staples
 // (dal, atta, rice, pasta) are excluded since the question is about the fridge.
+//
+// Animal proteins (chicken/fish/eggs/paneer) are now included for every cuisine.
+// The veg/vegan filter strips them out only when the user actually selects a
+// vegetarian/vegan diet — Indian users who eat meat shouldn't be forced into a
+// vegetarian fridge.
 const CUISINE_QUICK: Record<string, string[]> = {
-  Indian:        ['Tomato','Onion','Paneer','Coriander','Yogurt','Methi','Bhindi','Cabbage','Cucumber','Capsicum','Mint','Spinach'],
-  Mediterranean: ['Tomato','Cucumber','Yogurt','Feta','Lemon','Bell pepper','Olives','Mozzarella','Spinach','Eggs'],
-  Western:       ['Eggs','Milk','Cheese','Tomato','Spinach','Avocado','Lettuce','Bell pepper','Carrot','Mushrooms'],
-  'East Asian':  ['Eggs','Tofu','Cabbage','Ginger','Garlic','Cucumber','Mushrooms','Carrot','Spinach','Lemon'],
-  Latin:         ['Tomato','Onion','Avocado','Lime','Cilantro','Bell pepper','Cheese','Lettuce','Corn'],
+  Indian:        ['Tomato','Onion','Paneer','Yogurt','Chicken','Eggs','Coriander','Methi','Bhindi','Cabbage','Cucumber','Capsicum','Mint','Spinach','Fish','Mutton'],
+  Mediterranean: ['Tomato','Cucumber','Yogurt','Feta','Lemon','Bell pepper','Eggs','Chicken','Olives','Mozzarella','Spinach','Fish'],
+  Western:       ['Eggs','Milk','Cheese','Chicken','Tomato','Spinach','Avocado','Lettuce','Bell pepper','Carrot','Mushrooms','Beef'],
+  'East Asian':  ['Eggs','Tofu','Chicken','Cabbage','Ginger','Garlic','Cucumber','Mushrooms','Carrot','Spinach','Fish','Prawns'],
+  Latin:         ['Tomato','Onion','Avocado','Lime','Cilantro','Bell pepper','Cheese','Chicken','Lettuce','Corn','Eggs','Beef'],
 };
 
 const VEG_EXCLUDE = ['Chicken','Fish','Salmon','Prawns','Mutton','Lamb','Beef','Pork'];
@@ -419,10 +563,41 @@ const INIT: AppState = {
   wasteStreak:0, itemsUsed:0, itemsWasted:0,
   wastedByCategory:{},
   dislikedRecipes:[],
-  paywallClicks:{},
+  paywallClicks:{}, isPro:false,
+  aiRecipesUsed:{ date:'', count:0 },
+  joinedAt:'',
   priceHistory:{},
   restockItems:[], restockRegion:'',
 };
+
+// Free tier daily cap on AI recipe generations. The /api/meals endpoint is the
+// only thing that counts — local fallback recipes are unlimited.
+//
+// First-week welcome grace: every new user gets unlimited AI for the first 7
+// days from their first AppState save. After day 7, the daily cap kicks in.
+// This avoids the "I hit a paywall on day 1" friction that makes new users
+// bounce before they've seen what the AI is good for.
+const FREE_AI_RECIPES_PER_DAY = 5;
+const WELCOME_GRACE_DAYS = 7;
+function todayLocalDate() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// Wrapper around fetch with a hard timeout. Vercel's hobby tier kills function
+// calls after 10s, but the browser side never knows — so we cancel at 9s and
+// fall back. Without this, refresh appears to "hang forever" when Claude is slow.
+async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms = 20000): Promise<Response | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 type Tab = 'fridge'|'meals'|'restock'|'insights'|'profile';
 type Shelf = 'fridge'|'freezer'|'pantry';
@@ -447,6 +622,11 @@ function sanitizeState(input: Partial<AppState> | null | undefined): AppState | 
     wastedByCategory: input.wastedByCategory && typeof input.wastedByCategory === 'object' ? input.wastedByCategory : {},
     dislikedRecipes: Array.isArray(input.dislikedRecipes) ? input.dislikedRecipes : [],
     paywallClicks: input.paywallClicks && typeof input.paywallClicks === 'object' ? input.paywallClicks : {},
+    isPro: typeof input.isPro === 'boolean' ? input.isPro : false,
+    aiRecipesUsed: input.aiRecipesUsed && typeof input.aiRecipesUsed === 'object'
+      ? { date: typeof input.aiRecipesUsed.date === 'string' ? input.aiRecipesUsed.date : '', count: typeof input.aiRecipesUsed.count === 'number' ? input.aiRecipesUsed.count : 0 }
+      : { date: '', count: 0 },
+    joinedAt: typeof input.joinedAt === 'string' ? input.joinedAt : '',
     priceHistory: input.priceHistory && typeof input.priceHistory === 'object' ? input.priceHistory : {},
   };
 }
@@ -582,7 +762,10 @@ function toEditableFallbackItems(input: string, country: string) {
       shelf:'fridge' as const,
       category:'Other',
       emoji:'📦',
-      expiry: daysFromNow(7),
+      // Per-item shelf life (palak 3d, tomato 6d, ghee 180d, ...) instead of a
+      // blunt 7-day default. The lookup falls back to category-default if the
+      // name isn't in the table.
+      expiry: daysFromNow(expiryDaysForName(name, 'Other')),
       cost: estimatePrice(name, country),
       addedBy:'manual' as const,
     };
@@ -624,6 +807,55 @@ type FallbackRecipe = {
 
 // Pantry staples assumed available — don't count toward fridge overlap or anchor checks.
 const STAPLES = new Set(['salt','sugar','water','oil','olive oil','ghee','butter','pepper','black pepper','spices','cumin','turmeric','chilli flakes','chilli','chili','chillies','curry leaves','mustard seeds','cardamom','soy sauce','vinegar','honey','flour','wheat flour','basmati rice','rice','pasta','bread','wrap','cheese']);
+
+// Mirror of HERO_INGREDIENTS in /api/meals/route.ts. Specific named items that
+// shouldn't appear in a fallback recipe NAME unless the fridge has them.
+const LOCAL_HERO_NAMES = [
+  'tofu','chicken','fish','salmon','tuna','beef','mutton','lamb','pork','prawn','prawns','shrimp','egg','eggs','paneer',
+  'rajma','chickpea','chickpeas','chana','dal','lentil','lentils','rice','pasta','noodle','noodles','quinoa','bread','tortilla','wrap',
+  'roti','chapati','phulka','naan','flatbread','poha','dosa','idli','upma','sooji','rava','besan',
+  'bhindi','okra','methi','lauki','karela','spinach','palak','brinjal','eggplant','cabbage','carrot','capsicum','bell pepper','mushroom','mushrooms','tomato','potato','aloo','onion',
+  'cauliflower','gobi','peas','matar','pumpkin','beans','corn','avocado','mango','banana','apple','strawberry','blueberry','berries',
+];
+const LOCAL_HERO_ALIASES: Record<string, string[]> = {
+  paneer: ['paneer','cottage cheese'],
+  capsicum: ['capsicum','bell pepper','shimla mirch','peppers'],
+  'bell pepper': ['capsicum','bell pepper','shimla mirch','peppers'],
+  brinjal: ['brinjal','eggplant','baingan','aubergine'],
+  eggplant: ['brinjal','eggplant','baingan','aubergine'],
+  bhindi: ['bhindi','okra','lady finger','ladyfinger'],
+  okra: ['bhindi','okra','lady finger','ladyfinger'],
+  methi: ['methi','fenugreek'],
+  lauki: ['lauki','bottle gourd','dudhi'],
+  cabbage: ['cabbage','patta gobhi'],
+  carrot: ['carrot','carrots','gajar'],
+  cauliflower: ['cauliflower','gobi','phool gobi'],
+  gobi: ['cauliflower','gobi','phool gobi'],
+  potato: ['potato','potatoes','aloo'],
+  aloo: ['potato','potatoes','aloo'],
+  spinach: ['spinach','palak'],
+  palak: ['spinach','palak'],
+  egg: ['egg','eggs','anda'],
+  eggs: ['egg','eggs','anda'],
+  prawn: ['prawn','prawns','shrimp'],
+  prawns: ['prawn','prawns','shrimp'],
+  shrimp: ['prawn','prawns','shrimp'],
+  fish: ['fish','salmon','tuna','machli'],
+  salmon: ['fish','salmon','tuna','machli'],
+  rice: ['rice','basmati','poha','flattened rice'],
+  // Indian flatbread / batter dishes — fridge needs the bread itself OR the
+  // flour to make it. Otherwise drop the recipe.
+  roti: ['roti','chapati','phulka','flatbread','atta','wheat flour','whole wheat flour'],
+  chapati: ['roti','chapati','phulka','flatbread','atta','wheat flour','whole wheat flour'],
+  naan: ['naan','flatbread','maida','all purpose flour'],
+  flatbread: ['flatbread','roti','chapati','tortilla','wrap','naan','atta'],
+  poha: ['poha','flattened rice'],
+  dosa: ['dosa','dosa batter','idli batter'],
+  idli: ['idli','idli batter','idli rava','rava'],
+  upma: ['upma','sooji','rava','semolina'],
+  besan: ['besan','gram flour','chickpea flour'],
+  sooji: ['sooji','rava','semolina'],
+};
 
 const SLOT_RECIPES: Record<'breakfast'|'lunch'|'snack'|'dinner', FallbackRecipe[]> = {
   breakfast: [
@@ -815,24 +1047,56 @@ function buildFallbackMealsForDay(
     return { r, score, anchorHit, urgency };
   });
 
-  // Prefer recipes whose anchor ingredient is actually in the fridge.
-  // If 0 anchor matches but other ingredients overlap, fall back to those (so
-  // the page isn't empty when the user has 20 items but none of them are a
-  // listed anchor). Only return recipes with non-zero ingredient overlap when
-  // the fridge has items — empty fridge falls back to the whole slot pool so
-  // first-run users still see ideas.
+  // Prefer recipes whose ANCHOR (hero) ingredient is actually in the fridge.
+  // Anchor = the recipe's defining ingredient (Tofu for Tofu Stir-fry, Dal for
+  // Dal Tadka, etc.) — distinct from generic supporting ingredients like garlic
+  // or onion which appear in nearly every recipe.
+  //
+  // Strict policy: if fridge has items but no recipe's anchor matches, return
+  // empty. Falling back to "recipes that share at least one ingredient" was
+  // letting Tofu Stir-fry through whenever the user just had Garlic in the
+  // fridge — wrong recipe for the wrong fridge.
+  //
+  // The empty-fridge case (new user) still falls back to the whole pool so
+  // first-run onboarding shows ideas.
   const anchorMatches = scored.filter(s => s.anchorHit);
   let pickFrom: typeof scored;
   if (anchorMatches.length > 0) {
+    // Best case — at least one recipe's hero anchor is in the fridge. Use those.
     pickFrom = anchorMatches;
   } else if (fridgeWords.size === 0) {
+    // Empty fridge (first-run) — show the full pool so onboarding has ideas.
     pickFrom = scored;
   } else {
-    // Fridge has items but no recipe anchor matches. Show only recipes that
-    // share at least one ingredient with the fridge. If none, return empty
-    // rather than recommending recipes whose ingredients the user doesn't
-    // have (which is how Tofu Stir-fry was leaking in for users with no tofu).
+    // No anchor match but fridge has items — only include recipes that share
+    // at least one ingredient with the fridge. If nothing fits, return empty.
+    // Showing fake fallbacks (Veg Pulao when fridge has only pork belly)
+    // confuses users — better to render Loading… until the AI returns.
     pickFrom = scored.filter(s => s.score > 0);
+  }
+
+  // NAME-vs-FRIDGE check (mirrors the server-side guard in /api/meals).
+  // Anchor logic above lets a recipe through if ANY anchor word matches the
+  // fridge — but a recipe like "Paneer Wrap" with anchors ['paneer','capsicum']
+  // would slip through whenever the user has capsicum, even if paneer (the
+  // dish's actual hero) is missing. So drop any recipe whose NAME claims a
+  // hero ingredient that isn't in the fridge.
+  if (fridgeWords.size > 0) {
+    pickFrom = pickFrom.filter(({ r }) => {
+      const nameLc = r.name.toLowerCase();
+      const claimed = LOCAL_HERO_NAMES.filter(h => new RegExp(`\\b${h}\\b`, 'i').test(nameLc));
+      if (claimed.length === 0) return true;
+      // Recipe name claims a hero — at least one of those heroes must be in fridge.
+      return claimed.some(h => {
+        const aliases = LOCAL_HERO_ALIASES[h] || [h];
+        for (const a of aliases) {
+          for (const w of fridgeWords) {
+            if (w === a || w.includes(a) || a.includes(w)) return true;
+          }
+        }
+        return false;
+      });
+    });
   }
 
   // Sort: highest score first, stable hash tiebreak so output is deterministic per slot/day.
@@ -841,7 +1105,7 @@ function buildFallbackMealsForDay(
     return hashStr(`${a.r.name}|${dayOffset}|${slot}`) - hashStr(`${b.r.name}|${dayOffset}|${slot}`);
   });
 
-  const top = pickFrom.slice(0, 3);
+  const top = pickFrom.slice(0, 6);
   return top.map(({ r, urgency }) => ({
     name: r.name,
     emoji: r.emoji,
@@ -974,6 +1238,10 @@ export default function FridgeBee() {
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
   const [fridgeView, setFridgeView] = useState<'list' | 'grid'>('list');
+  // Fridge "Recent additions" history — collapsed by default, expanded with
+  // per-batch tap-to-open. Receipts/scans grouped by batchId.
+  const [showHistory, setShowHistory] = useState(false);
+  const [expandedBatch, setExpandedBatch] = useState<string | null>(null);
   const [parsedEditable, setParsedEditable] = useState<Partial<FoodItem>[]>([]);
   const [showManualTypeFallback, setShowManualTypeFallback] = useState(false);
   const [af, setAf] = useState({ name:'', emoji:'🥦', shelf:'fridge' as Shelf, category:'Produce', qty:'1', unit:'pcs', expiry:daysFromNow(7) });
@@ -985,15 +1253,28 @@ export default function FridgeBee() {
   const [recipeScreen, setRecipeScreen] = useState<Meal|null>(null);
   const [prefsBannerVisible, setPrefsBannerVisible] = useState(true);
   const [meals, setMeals] = useState<Meal[]>([]);
+  // Push diagnostics — populated by the "Show diagnostics" button so we can
+  // see why a test push didn't land on a particular device.
+  const [pushDiag, setPushDiag] = useState<Awaited<ReturnType<typeof getPushDiagnostics>> | null>(null);
+  // Bump to force the meals auto-load useEffect to re-fire even when its other
+  // deps haven't changed (e.g. after cooking when item qty changed but item
+  // names + length stayed the same).
+  const [mealsRefreshKey, setMealsRefreshKey] = useState(0);
   const [plannedDays, setPlannedDays] = useState<PlannedDayMeals[]>([]);
   const [mealsLoading, setMealsLoading] = useState(false);
   const [mealsViewMode, setMealsViewMode] = useState<'time'|'days'>('time');
   const [selectedPlanDay, setSelectedPlanDay] = useState<'today'|'tomorrow'|'day-after'>('today');
-  const [mealPeriod, setMealPeriod] = useState<'breakfast'|'lunch'|'snack'|'dinner'>(() => {
+  // Swap-cycle index for each row in the 3-day plan, keyed by `${dayId}:${slotIdx}`.
+  // Tapping Swap on a row advances its index; pre-fetched alternatives all sit
+  // inside `plannedDays[*].meals[]` and we index into that.
+  const [planSwapIdx, setPlanSwapIdx] = useState<Record<string, number>>({});
+  // Slide animation state for swap. 'out' translates the card left, 'in' bounces
+  // it back from the right. null = at rest. Same key as planSwapIdx.
+  const [planSwapAnim, setPlanSwapAnim] = useState<Record<string, 'out'|'in'|null>>({});
+  const [mealPeriod, setMealPeriod] = useState<'breakfast'|'lunch'|'dinner'>(() => {
     const hour = new Date().getHours();
     if (hour < 11) return 'breakfast';
-    if (hour < 15) return 'lunch';
-    if (hour < 18) return 'snack';
+    if (hour < 16) return 'lunch';
     return 'dinner';
   });
   const [itemQtyEdit, setItemQtyEdit] = useState<Record<string,number>>({});
@@ -1013,8 +1294,10 @@ export default function FridgeBee() {
     about: true,
     account: true,
     household: true,
+    pro: false,
     notifications: false,
     share: false,
+    help: false,
     settings: false,
   });
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1038,6 +1321,24 @@ export default function FridgeBee() {
           // Migration: earlier versions stored country='US' (INIT default) even for non-US
           // timezones. If the device clearly disagrees, override so prices/UI localise.
           if (parsed.country === 'US' && country !== 'US') parsed.country = country;
+          // Migration: an earlier bug stamped items with a flat 7-day expiry
+          // even for items the table knows about (palak 3d, methi 3d, ghee 180d, ...).
+          // Detect items whose expiry == added + 7 days exactly AND where the table
+          // gives a different value, then re-stamp from added-date with the correct
+          // shelf life. Skip items the user has manually edited (anything not exactly 7d).
+          parsed.items = parsed.items.map(it => {
+            if (!it.added || !it.expiry) return it;
+            const addedMs = new Date(it.added + 'T00:00:00').getTime();
+            const expiryMs = new Date(it.expiry + 'T00:00:00').getTime();
+            if (Number.isNaN(addedMs) || Number.isNaN(expiryMs)) return it;
+            const stampedDays = Math.round((expiryMs - addedMs) / 86400000);
+            if (stampedDays !== 7) return it; // user edited or different default
+            const correct = expiryDaysForName(it.name, it.category);
+            if (correct === 7) return it; // table also says 7 — no change
+            const fixed = new Date(addedMs);
+            fixed.setDate(fixed.getDate() + correct);
+            return { ...it, expiry: fixed.toISOString().slice(0,10) };
+          });
           initialLocalStateRef.current = parsed;
           setS(parsed);
         }
@@ -1087,6 +1388,17 @@ export default function FridgeBee() {
       else {
         setCloudReady(false);
         cloudHydratedUserRef.current = null;
+      }
+      // Append-only auth log so we can see signup/sign-in/sign-out funnel.
+      if (nextSession?.user && (_event === 'SIGNED_IN' || _event === 'INITIAL_SESSION')) {
+        const u = nextSession.user;
+        supabase.from('user_events').insert({
+          user_id: u.id,
+          type: _event === 'SIGNED_IN' ? 'signed_in' : 'session_resumed',
+          payload: { email: u.email || null, provider: u.app_metadata?.provider || 'email' },
+        }).then(({ error }) => {
+          if (error && process.env.NODE_ENV !== 'production') console.warn('auth event log', error.message);
+        });
       }
     });
 
@@ -1207,6 +1519,82 @@ export default function FridgeBee() {
     return () => clearTimeout(t);
   }, [tab]);
 
+  // Browser notifications. We don't run a service worker (those require HTTPS
+  // setup + push key infra), so this only fires while the app/tab is open.
+  // Logic: once per local-day, if any item is expiring today/tomorrow and the
+  // user has notifications enabled with permission granted, surface a single
+  // dynamic Notification listing the count + the soonest item's name. Stored
+  // in localStorage so we don't spam on every refresh.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (!s.notifEnabled || Notification.permission !== 'granted') return;
+    if (s.items.length === 0) return;
+    const today = todayLocalDate();
+    const lastShown = localStorage.getItem('fb_notif_last');
+    if (lastShown === today) return;
+
+    const expiringNow = s.items
+      .map(it => ({ it, days: daysUntil(it.expiry) }))
+      .filter(({ days }) => days <= 1)
+      .sort((a, b) => a.days - b.days);
+    if (expiringNow.length === 0) return;
+
+    const head = expiringNow[0].it.name;
+    const extra = expiringNow.length - 1;
+    const title = expiringNow.length === 1
+      ? `${head} expires ${expiringNow[0].days <= 0 ? 'today' : 'tomorrow'} 🍳`
+      : `${expiringNow.length} items expiring soon 🍳`;
+    const body = expiringNow.length === 1
+      ? `Use it today — open FridgeBee for a quick recipe.`
+      : `${head}${extra > 0 ? ` + ${extra} more` : ''} need using. Tap for ideas.`;
+    try {
+      const n = new Notification(title, {
+        body,
+        icon: '/favicon.ico',
+        tag: `fb-expiry-${today}`,
+        requireInteraction: false,
+      });
+      n.onclick = () => { window.focus(); setTab('meals'); n.close(); };
+      localStorage.setItem('fb_notif_last', today);
+      logEvent('notification_shown', { type: 'expiry_digest', count: expiringNow.length });
+    } catch {
+      // Notification constructor can throw on some platforms; fail silently.
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.notifEnabled, s.items.length]);
+
+  // Resync the push subscription's state snapshot whenever the fridge
+  // composition changes. This keeps server-side notifications fresh — when
+  // the user adds Mango or cooks the Methi, the next push uses the new state.
+  // Runs only when push is already enabled (otherwise no subscription exists).
+  useEffect(() => {
+    if (!s.notifEnabled) return;
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      if (cancelled) return;
+      // Reuse the same flow as toggle-on, but silently — no toasts.
+      await subscribePush({
+        userId: authUser?.id,
+        notifTimes: s.notifTimes,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        state: {
+          items: s.items.map(it => ({
+            name: it.name, expiry: it.expiry, qty: it.qty,
+            unit: it.unit, added: it.added,
+          })),
+          members: s.members.map(m => ({ name: m.name, isKid: m.isKid, age: m.age })),
+          name: s.name,
+          cuisines: s.cuisines,
+          itemsUsed: s.itemsUsed,
+          itemsWasted: s.itemsWasted,
+        },
+      });
+    }, 1500); // debounce — don't hit the server on every keystroke / item edit
+    return () => { cancelled = true; clearTimeout(t); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.notifEnabled, s.items.length, s.items.map(i=>i.name+':'+i.qty).join('|'), s.members.length, s.itemsUsed, s.itemsWasted]);
+
   // Fetch meals when meals tab is active
   useEffect(() => {
     if (tab !== 'meals' || s.items.length === 0) return;
@@ -1241,31 +1629,35 @@ export default function FridgeBee() {
     async function loadMeals() {
       setMealsLoading(true);
       if (mealsViewMode === 'days') {
+        // 3-day plan is Pro-only. Free users see fallback recipes only — no AI calls.
         const nextPlan: PlannedDayMeals[] = [];
         const rollingExclude = new Set(hiddenNames);
+        const householdAllergies = Array.from(new Set([...(s.allergies||[]), ...s.members.flatMap(m => m.allergies||[])]));
+        const householdDiets = Array.from(new Set([...(s.dietaryFilters||[]), ...s.members.flatMap(m => m.dietaryFilters||[])]));
         for (const meta of dayPlanMeta()) {
-          const response = await fetch('/api/meals', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              items: s.items,
-              cuisines: s.cuisines,
-              members: mealMembers,
-              mealType: mealPeriod,
-              excludeMeals: Array.from(rollingExclude),
-              count: 2,
-              planningDay: meta.label,
-              dayOffset: meta.dayOffset,
-            }),
-          });
-          const data = response.ok ? await response.json() : { meals: [] };
-          let dayMeals = (data.meals || []).filter((meal: Meal) => !rollingExclude.has(meal.name.toLowerCase()));
+          let dayMeals: Meal[] = [];
+          if (s.isPro) {
+            const response = await fetchWithTimeout('/api/meals', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                items: s.items,
+                cuisines: s.cuisines,
+                members: mealMembers,
+                mealType: mealPeriod,
+                excludeMeals: Array.from(rollingExclude),
+                count: 6,
+                planningDay: meta.label,
+                dayOffset: meta.dayOffset,
+              }),
+            });
+            const data = response?.ok ? await response.json() : { meals: [] };
+            dayMeals = (data.meals || []).filter((meal: Meal) => !rollingExclude.has(meal.name.toLowerCase()));
+          }
           if (!dayMeals.length) {
             const rotatedItems = [...s.items]
               .sort((a, b) => daysUntil(a.expiry) - daysUntil(b.expiry))
               .slice(meta.dayOffset);
-            const householdAllergies = Array.from(new Set([...(s.allergies||[]), ...s.members.flatMap(m => m.allergies||[])]));
-            const householdDiets = Array.from(new Set([...(s.dietaryFilters||[]), ...s.members.flatMap(m => m.dietaryFilters||[])]));
             dayMeals = buildFallbackMealsForDay(rotatedItems, mealPeriod, s.members.find(member => (member.age ?? 99) < 5)?.name, meta.dayOffset, s.cuisines, householdDiets, householdAllergies)
               .filter((meal: Meal) => !rollingExclude.has(meal.name.toLowerCase()));
           }
@@ -1274,19 +1666,35 @@ export default function FridgeBee() {
         }
         if (!cancelled) setPlannedDays(nextPlan);
       } else {
-        const response = await fetch('/api/meals', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            items: s.items,
-            cuisines: s.cuisines,
-            members: mealMembers,
-            mealType: mealPeriod,
-            excludeMeals: Array.from(hiddenNames),
-          }),
-        });
-        const data = response.ok ? await response.json() : { meals: [] };
-        if (!cancelled) setMeals(data.meals || []);
+        // Single-day AI recipes. Free tier: 3/day. Past quota → fall back to local pool.
+        if (aiRecipesRemaining() > 0) {
+          const response = await fetchWithTimeout('/api/meals', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              items: s.items,
+              cuisines: s.cuisines,
+              members: mealMembers,
+              mealType: mealPeriod,
+              excludeMeals: Array.from(hiddenNames),
+            }),
+          });
+          const data = response?.ok ? await response.json() : { meals: [] };
+          if (response?.ok) {
+            consumeAiRecipeQuota(1);
+            logEvent('ai_recipes_fetched', { mode: 'today', count: (data.meals || []).length, remaining: aiRecipesRemaining() - 1 });
+          } else if (!response) {
+            // Timeout / network — keep the local fallback rendering and log it
+            // so we can see how often this happens.
+            logEvent('ai_recipes_timeout', { mode: 'today' });
+          }
+          // Only swap in AI results if non-empty — keeps fallback if AI returns nothing.
+          if (!cancelled && (data.meals || []).length > 0) setMeals(data.meals);
+        } else {
+          // Quota exhausted — leave meals[] empty so the existing fallback renderer kicks in.
+          if (!cancelled) setMeals([]);
+          logEvent('ai_recipes_blocked', { mode: 'today', reason: 'free_daily_cap' });
+        }
       }
       if (!cancelled) setMealsLoading(false);
     }
@@ -1298,13 +1706,110 @@ export default function FridgeBee() {
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, mealPeriod, mealsViewMode]);
+  // Re-fetch when fridge composition changes (item count or names) — so
+  // cooking a recipe + removing its hero ingredient causes the meals list to
+  // refresh and stop suggesting it. Using a stable signature so we don't
+  // refire on price/expiry-only edits.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, mealPeriod, mealsViewMode, s.isPro, s.items.length, s.items.map(i=>i.name).join('|'), mealsRefreshKey]);
 
   function up(p: Partial<AppState>) { setS(prev => ({...prev,...p})); }
+  // Append-only analytics log. Posts to user_events on Supabase. Silent on
+  // failure — analytics must never break the UX. Skips when there's no auth
+  // session (RLS would reject and we'd noise the console).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function logEvent(type: string, payload: Record<string, any> = {}) {
+    if (!authUser) return;
+    supabase.from('user_events').insert({
+      user_id: authUser.id,
+      type,
+      payload,
+    }).then(({ error }) => {
+      if (error && process.env.NODE_ENV !== 'production') console.warn('logEvent', type, error.message);
+    });
+  }
   function showT(msg: string) { setToast(msg); setTimeout(()=>setToast(''), 2800); }
   // Track which paywall placement the user tapped, so we can see which CTA converts.
   function trackPaywall(trigger: string) {
+    logEvent('paywall_clicked', { trigger });
     setS(prev => ({ ...prev, paywallClicks: { ...prev.paywallClicks, [trigger]: (prev.paywallClicks[trigger] || 0) + 1 } }));
+  }
+  // Trial CTA — until the real Stripe/Kafe webhook is wired, the "Start free
+  // trial" button just flips isPro on locally so the user can actually test
+  // the gated features (3-day plan, multi-member, unlimited AI). Logs both
+  // events so analytics still see the click as a conversion intent.
+  function startProTrial(trigger: string) {
+    const ts = new Date().toISOString();
+    // Rich payload so we can see who's willing to pay, when they tapped, and
+    // what their household looks like at the moment of conversion intent.
+    // Query in Supabase:
+    //   select user_id, payload->>'email' as email, payload->>'trigger' as trigger,
+    //          payload->>'plan' as plan, created_at
+    //   from user_events where type = 'trial_started' order by created_at desc;
+    const payload = {
+      trigger,
+      plan: 'beta_pro',
+      price: 3.99,
+      currency: 'USD',
+      email: authUser?.email || null,
+      is_guest: !authUser,
+      members_count: s.members.length,
+      items_count: s.items.length,
+      has_kid: s.members.some(m => m.isKid || (m.age != null && m.age < 12)),
+      country: s.country,
+      ts,
+    };
+    logEvent('paywall_clicked', { trigger });
+    logEvent('trial_started', payload);
+    setS(prev => ({
+      ...prev,
+      paywallClicks: { ...prev.paywallClicks, [trigger]: (prev.paywallClicks[trigger] || 0) + 1 },
+      isPro: true,
+    }));
+    if (authUser) {
+      showT('Pro unlocked — 7-day trial active ✓');
+    } else {
+      // Guest: their isPro flag lives in localStorage only until they sign in.
+      // The user_app_state row (with isPro=true) syncs to Supabase the moment
+      // they create an account, so we still capture the conversion. Nudge them
+      // toward Profile so the trial doesn't evaporate on a different device.
+      showT('Pro unlocked — sign in on Profile to save your trial');
+    }
+  }
+  // True while the user is inside the WELCOME_GRACE_DAYS window — fall back to
+  // the earliest item's added-date for legacy users with no joinedAt stamp.
+  function inWelcomeGrace(): boolean {
+    let started = s.joinedAt;
+    if (!started && s.items.length) {
+      const earliest = [...s.items].sort((a, b) => (a.added || '').localeCompare(b.added || ''))[0]?.added;
+      if (earliest) started = earliest + 'T00:00:00';
+    }
+    if (!started) return true; // brand new — no fridge history yet, give grace
+    const ageMs = Date.now() - new Date(started).getTime();
+    return ageMs < WELCOME_GRACE_DAYS * 86400000;
+  }
+  // Free tier: cap AI recipe generations at FREE_AI_RECIPES_PER_DAY/day. Returns
+  // remaining count (0 = blocked). Pro is unlimited. Welcome grace = unlimited
+  // for the first WELCOME_GRACE_DAYS so new users actually see the app shine.
+  function aiRecipesRemaining(): number {
+    if (s.isPro || inWelcomeGrace()) return Infinity;
+    const today = todayLocalDate();
+    if (s.aiRecipesUsed.date !== today) return FREE_AI_RECIPES_PER_DAY;
+    return Math.max(0, FREE_AI_RECIPES_PER_DAY - s.aiRecipesUsed.count);
+  }
+  function consumeAiRecipeQuota(n = 1) {
+    if (s.isPro || inWelcomeGrace()) return;
+    const today = todayLocalDate();
+    setS(prev => {
+      const sameDay = prev.aiRecipesUsed.date === today;
+      return {
+        ...prev,
+        aiRecipesUsed: {
+          date: today,
+          count: (sameDay ? prev.aiRecipesUsed.count : 0) + n,
+        },
+      };
+    });
   }
 
   async function continueWithGoogle() {
@@ -1373,6 +1878,8 @@ export default function FridgeBee() {
 
   async function signOutUser() {
     setAuthBusy(true);
+    // Fire the event before signOut() invalidates the session.
+    logEvent('signed_out', { email: authUser?.email || null });
     const { error } = await supabase.auth.signOut();
     setAuthBusy(false);
     if (error) {
@@ -1450,7 +1957,7 @@ export default function FridgeBee() {
         cost: estimatePrice(name, country, 1, 'pcs', s.priceHistory),
       };
     });
-    up({ onboarded:true, items, country });
+    up({ onboarded:true, items, country, joinedAt: s.joinedAt || new Date().toISOString() });
   }
 
   function OB() {
@@ -1498,7 +2005,7 @@ export default function FridgeBee() {
     // ── Step 1: Quick fridge setup
     const obCountry = s.country || detectCountry();
     // Reactive: picks change as the user toggles diet / cuisine.
-    const localItems = pickContextualQuickItems(obCountry, s.cuisines, s.dietaryFilters, 8);
+    const localItems = pickContextualQuickItems(obCountry, s.cuisines, s.dietaryFilters, 12);
     return (
       <div className="ob-wrap" style={{background:'var(--cr)'}}>
         <div style={{padding:'20px 20px 8px', flexShrink:0}}>
@@ -1529,12 +2036,21 @@ export default function FridgeBee() {
               return (
                 <button key={d}
                   onClick={() => {
-                    // Vegetarian and Vegan are mutually exclusive — picking one removes the other.
+                    // Mutual-exclusion groups — picking any one removes others in its group:
+                    //  · diet base: Vegetarian / Vegan / Pescatarian / Non-halal (last = "I eat anything")
+                    //  · halal axis: Halal vs Non-halal (can't be both)
                     let next = on
                       ? s.dietaryFilters.filter(f => f !== d)
                       : [...s.dietaryFilters, d];
-                    if (!on && (d === 'Vegan' || d === 'Vegetarian')) {
-                      next = next.filter(f => f === d || !['Vegan','Vegetarian'].includes(f));
+                    if (!on) {
+                      const VEG_GROUP = ['Vegan','Vegetarian','Pescatarian','Non-halal'];
+                      const HALAL_GROUP = ['Halal','Non-halal'];
+                      if (VEG_GROUP.includes(d)) {
+                        next = next.filter(f => f === d || !VEG_GROUP.includes(f));
+                      }
+                      if (HALAL_GROUP.includes(d)) {
+                        next = next.filter(f => f === d || !HALAL_GROUP.includes(f));
+                      }
                     }
                     up({ dietaryFilters: next });
                   }}
@@ -1556,7 +2072,7 @@ export default function FridgeBee() {
             CUISINE COMPASS
           </div>
           <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:8}}>
-            {CUISINE_COMPASS.map(c => {
+            {sortedCuisineCompass(s.country || detectCountry()).map(c => {
               const on = s.cuisines.includes(c.id);
               return (
                 <button key={c.id}
@@ -1593,22 +2109,22 @@ export default function FridgeBee() {
           <div style={{fontSize:13, fontWeight:800, color:'var(--ink)', marginBottom:10, fontFamily:'Fraunces, Georgia, serif'}}>
             What&apos;s in your fridge right now?
           </div>
-          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:6, marginBottom:10}}>
+          <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:5, marginBottom:10}}>
             {localItems.map(it => {
               const sel = obPicks.includes(it.name);
               return (
                 <button key={it.name}
                   onClick={()=>setObPicks(prev => sel ? prev.filter(n=>n!==it.name) : [...prev, it.name])}
                   style={{
-                    display:'flex', flexDirection:'column', alignItems:'center', gap:2,
-                    padding:'8px 2px', borderRadius:11, border:'1.5px solid',
-                    fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+                    display:'flex', flexDirection:'column', alignItems:'center', gap:1,
+                    padding:'6px 2px', borderRadius:10, border:'1.5px solid',
+                    fontSize:10, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
                     transition:'all .12s',
                     borderColor: sel ? 'var(--bee)' : 'var(--bd)',
                     background:  sel ? 'var(--beel)' : 'var(--white)',
                     color:       sel ? 'var(--beed)' : 'var(--ink)',
                   }}>
-                  <span style={{fontSize:20, lineHeight:1}}>{it.emoji}</span>
+                  <span style={{fontSize:17, lineHeight:1}}>{it.emoji}</span>
                   <span style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:'100%'}}>{it.name}</span>
                 </button>
               );
@@ -1704,8 +2220,20 @@ export default function FridgeBee() {
     const cntAfter = addCount + list.length;
     setAddCount(cntAfter);
     localStorage.setItem('fb_add_cnt', String(cntAfter));
-    const today = new Date().toISOString().slice(0,10);
-    const stamped: FoodItem[] = list.map(it => ({ ...it, id: uid(), added: today }));
+    const now = new Date();
+    const today = now.toISOString().slice(0,10);
+    const nowIsoStamp = now.toISOString();
+    // Single batch ID for all items entered together — drives the Fridge "Recent
+    // additions" history view. Carries through to logEvent so analytics can
+    // aggregate by batch as well.
+    const batchId = uid();
+    const stamped: FoodItem[] = list.map(it => ({
+      ...it,
+      id: uid(),
+      added: today,
+      batchId: it.batchId || batchId,
+      addedAtIso: it.addedAtIso || nowIsoStamp,
+    }));
     // Build price-history updates: only items where a real cost > 0 was supplied
     // (scan-with-printed-price, or user-edited cost). Per-unit so 200g cheese vs
     // 1kg cheese don't conflict.
@@ -1724,17 +2252,38 @@ export default function FridgeBee() {
       priceHistory: { ...prev.priceHistory, ...priceUpdates },
     }));
     showT(list.length === 1 ? `Added ${list[0].name} ✓` : `Added ${list.length} items ✓`);
+    // Analytics — one event per item added so we can slice by method later.
+    for (const it of stamped) {
+      logEvent('item_added', {
+        name: it.name, qty: it.qty, unit: it.unit, category: it.category,
+        method: it.addedBy || 'manual', shelf: it.shelf, expiry: it.expiry, cost: it.cost ?? null,
+        batchId: it.batchId,
+      });
+    }
+    // One per-batch summary event so we can see "shopping trips" in user_events.
+    if (list.length > 1) {
+      const total = stamped.reduce((sum, it) => sum + (it.cost || 0), 0);
+      logEvent('batch_added', {
+        batchId,
+        method: stamped[0].addedBy || 'manual',
+        items_count: list.length,
+        total_cost: parseFloat(total.toFixed(2)),
+        item_names: stamped.map(it => it.name),
+      });
+    }
   }
   // Plain delete — does NOT count as waste. Only the explicit
   // "Threw it / wasted" action in the item modal bumps the waste counters.
   function removeItem(id: string) {
     const it = s.items.find(i => i.id === id);
     up({ items: s.items.filter(i => i.id !== id) });
+    if (it) logEvent('item_removed', { name: it.name, qty: it.qty, unit: it.unit, category: it.category });
     showT(`Removed ${it?.name || 'item'}`);
   }
   function markUsed(id: string) {
     const it = s.items.find(i=>i.id===id);
     up({items:s.items.filter(i=>i.id!==id), itemsUsed:s.itemsUsed+1, wasteStreak:s.wasteStreak+1});
+    if (it) logEvent('item_used', { name: it.name, qty: it.qty, unit: it.unit, category: it.category });
     showT(`Used ${it?.name} 🍳`);
   }
 
@@ -1848,7 +2397,9 @@ export default function FridgeBee() {
     const batch = parsed.filter(it => it.name).map(it => {
       const sh = (it.shelf || 'fridge') as Shelf;
       tally[sh] = (tally[sh] || 0) + 1;
-      return { name: it.name!, emoji: it.emoji || '📦', shelf: sh, category: it.category || 'Other', qty: it.qty || 1, unit: it.unit || 'pcs', expiry: it.expiry || daysFromNow(7) };
+      const name = it.name!;
+      const category = it.category || 'Other';
+      return { name, emoji: it.emoji || '📦', shelf: sh, category, qty: it.qty || 1, unit: it.unit || 'pcs', expiry: it.expiry || daysFromNow(expiryDaysForName(name, category)) };
     });
     addItems(batch);
     // Switch to the shelf tab where most items landed so user actually sees what was added.
@@ -2064,6 +2615,128 @@ export default function FridgeBee() {
           </div>
         </div>
 
+        {/* Recent additions / receipt history — items grouped by their batchId
+            (one batch per scan / voice burst / multi-add). Collapsed by default. */}
+        {(() => {
+          // Group all of the user's items into batches, then render summaries.
+          const groups = new Map<string, FoodItem[]>();
+          for (const it of s.items) {
+            const key = it.batchId || `legacy-${it.added || 'unknown'}-${it.addedBy || 'manual'}`;
+            const arr = groups.get(key) || [];
+            arr.push(it);
+            groups.set(key, arr);
+          }
+          const batches = Array.from(groups.entries()).map(([id, list]) => {
+            const sample = list[0];
+            const ts = sample.addedAtIso || `${sample.added || ''}T00:00:00`;
+            const total = list.reduce((sum, it) => sum + (it.cost || 0), 0);
+            return {
+              id,
+              date: sample.added || '',
+              ts,
+              method: (sample.addedBy || 'manual') as 'manual'|'voice'|'scan',
+              source: sample.sourceLabel || '',
+              items: list,
+              total,
+            };
+          }).sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+
+          if (batches.length === 0) return null;
+
+          // Pretty-print "Today / Yesterday / Apr 19" for each batch row.
+          function fmtDate(iso: string) {
+            const d = new Date(iso);
+            if (Number.isNaN(d.getTime())) return iso.slice(0,10);
+            const today = new Date();
+            const sameDay = d.toDateString() === today.toDateString();
+            const yest = new Date(today); yest.setDate(today.getDate() - 1);
+            const isYest = d.toDateString() === yest.toDateString();
+            const time = d.toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' });
+            if (sameDay) return `Today · ${time}`;
+            if (isYest) return `Yesterday · ${time}`;
+            return d.toLocaleDateString('en', { month: 'short', day: 'numeric' });
+          }
+          const methodIcon = (m: 'manual'|'voice'|'scan') => m === 'scan' ? '📷' : m === 'voice' ? '🎤' : '✍️';
+          const methodLabel = (m: 'manual'|'voice'|'scan') => m === 'scan' ? 'Receipt scan' : m === 'voice' ? 'Voice add' : 'Manual add';
+
+          return (
+            <div style={{ padding:'10px 16px 0' }}>
+              <button
+                onClick={() => setShowHistory(v => !v)}
+                style={{
+                  width:'100%', display:'flex', alignItems:'center', justifyContent:'space-between',
+                  background:'var(--white)', border:'1.5px solid var(--bd)', borderRadius:14,
+                  padding:'12px 14px', cursor:'pointer', fontFamily:'inherit', textAlign:'left',
+                }}
+              >
+                <span style={{ display:'flex', alignItems:'center', gap:8 }}>
+                  <span style={{ fontSize:16 }}>📜</span>
+                  <span style={{ fontWeight:800, fontSize:13.5, color:'var(--ink)' }}>Recent additions</span>
+                  <span style={{ fontSize:11, color:'var(--mu)', fontWeight:600 }}>· {batches.length}</span>
+                </span>
+                <span style={{ color:'var(--mu)', fontSize:14 }}>{showHistory ? '▾' : '▸'}</span>
+              </button>
+              {showHistory && (
+                <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:8 }}>
+                  {batches.slice(0, 12).map(b => {
+                    const open = expandedBatch === b.id;
+                    return (
+                      <div key={b.id} style={{ background:'var(--white)', border:'0.5px solid var(--bd)', borderRadius:14 }}>
+                        <button
+                          onClick={() => setExpandedBatch(open ? null : b.id)}
+                          style={{
+                            width:'100%', display:'flex', alignItems:'center', gap:10,
+                            padding:'10px 12px', background:'transparent', border:'none', borderRadius:14,
+                            cursor:'pointer', fontFamily:'inherit', textAlign:'left',
+                          }}
+                        >
+                          <span style={{ fontSize:18 }}>{methodIcon(b.method)}</span>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontWeight:700, fontSize:13, color:'var(--ink)' }}>
+                              {b.source ? `${b.source} · ` : ''}{methodLabel(b.method)}
+                            </div>
+                            <div style={{ fontSize:11, color:'var(--mu)', marginTop:1 }}>
+                              {fmtDate(b.ts)} · {b.items.length} item{b.items.length===1?'':'s'}{b.total > 0 ? ` · ${currency}${b.total.toFixed(2)}` : ''}
+                            </div>
+                          </div>
+                          <span style={{ color:'var(--mu)', fontSize:14 }}>{open ? '▾' : '▸'}</span>
+                        </button>
+                        {open && (
+                          <div style={{ borderTop:'0.5px solid var(--bd)', padding:'8px 12px 10px', display:'flex', flexDirection:'column', gap:6 }}>
+                            {b.items.map(it => (
+                              <button
+                                key={it.id}
+                                onClick={() => setEditItem(it)}
+                                style={{
+                                  display:'flex', alignItems:'center', gap:10, padding:'6px 8px',
+                                  background:'var(--cr)', border:'none', borderRadius:10,
+                                  cursor:'pointer', fontFamily:'inherit', textAlign:'left',
+                                }}
+                              >
+                                <span style={{ fontSize:18 }}>{it.emoji}</span>
+                                <span style={{ flex:1, fontSize:12, fontWeight:600, color:'var(--ink)' }}>{it.name}</span>
+                                <span style={{ fontSize:11, color:'var(--mu)' }}>{it.qty}{it.unit}</span>
+                                {typeof it.cost === 'number' && it.cost > 0 && (
+                                  <span style={{ fontSize:11, color:'var(--mu)' }}>{currency}{it.cost.toFixed(2)}</span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {batches.length > 12 && (
+                    <div style={{ fontSize:11, color:'var(--mu)', textAlign:'center', marginTop:4 }}>
+                      Showing 12 most recent of {batches.length} additions.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Item groups */}
         <div style={{ padding:'12px 16px' }}>
           {filtered.length === 0
@@ -2095,7 +2768,8 @@ export default function FridgeBee() {
         .filter(meal => Date.now() - new Date(meal.cookedAt).getTime() < 3 * 86400000)
         .map(meal => meal.name.toLowerCase())
     );
-    const dislikedSet = new Set(s.dislikedRecipes.map(n => n.toLowerCase()));
+    // Lower-cased dislike list passed to isRecipeDisliked() for fuzzy match.
+    const dislikedList = s.dislikedRecipes;
     const toddler = s.members.find(member => (member.age ?? 99) < 5);
     const safeName = toddler?.name || 'little one';
     const fallbackItems = [...(expiring.length ? expiring : s.items)]
@@ -2103,13 +2777,29 @@ export default function FridgeBee() {
     const fallbackHouseholdAllergies = Array.from(new Set([...(s.allergies||[]), ...s.members.flatMap(m => m.allergies||[])]));
     const fallbackHouseholdDiets = Array.from(new Set([...(s.dietaryFilters||[]), ...s.members.flatMap(m => m.dietaryFilters||[])]));
     const fallback: Meal[] = buildFallbackMealsForDay(fallbackItems, mealPeriod, safeName, 0, s.cuisines, fallbackHouseholdDiets, fallbackHouseholdAllergies);
-    const displayMeals = (meals.length > 0 ? meals : fallback).filter(meal => !hiddenMealNames.has(meal.name.toLowerCase()) && !dislikedSet.has(meal.name.toLowerCase()));
+    const displayMeals = (meals.length > 0 ? meals : fallback).filter(meal =>
+      !hiddenMealNames.has(meal.name.toLowerCase())
+      && !isRecipeDisliked(meal.name, dislikedList)
+    );
     const markNotForMe = (recipeName: string) => {
       const lower = recipeName.toLowerCase();
-      up({ dislikedRecipes: [...s.dislikedRecipes.filter(n => n.toLowerCase() !== lower), recipeName] });
+      logEvent('recipe_disliked', { name: recipeName });
+      const nextDislike = [...s.dislikedRecipes.filter(n => n.toLowerCase() !== lower), recipeName];
+      up({ dislikedRecipes: nextDislike });
+      // Use fuzzy match so AI re-rendering of "Veg Pulao" as "Veg Pulav"
+      // still gets caught — same logic the displayMeals filter uses.
+      setMeals(prev => prev.filter(m => !isRecipeDisliked(m.name, nextDislike)));
+      setPlannedDays(prev => prev.map(day => ({ ...day, meals: day.meals.filter(m => !isRecipeDisliked(m.name, nextDislike)) })));
+      showT(`"${recipeName}" hidden — won’t suggest again`);
+    };
+    // "Not today" — soft skip. Drops the recipe from the current view but does
+    // NOT add it to disliked. It can come back next time the user refreshes.
+    const markNotToday = (recipeName: string) => {
+      const lower = recipeName.toLowerCase();
+      logEvent('recipe_skipped_today', { name: recipeName });
       setMeals(prev => prev.filter(m => m.name.toLowerCase() !== lower));
       setPlannedDays(prev => prev.map(day => ({ ...day, meals: day.meals.filter(m => m.name.toLowerCase() !== lower) })));
-      showT(`"${recipeName}" hidden — won’t suggest again`);
+      showT(`"${recipeName}" skipped for today`);
     };
     const refreshMeals = async () => {
       const mealMembers = [
@@ -2135,40 +2825,109 @@ export default function FridgeBee() {
         ...Array.from(hiddenMealNames),
         ...s.dislikedRecipes.map(n => n.toLowerCase()),
       ]));
+      // INSTANT-FALLBACK refresh strategy. Old behavior blocked the UI for the
+      // full Claude round-trip (3–6s). Now: re-shuffle the local fallback pool
+      // immediately and render it. Then fire the AI request in the background
+      // and replace `meals` when it returns. User sees fresh recipes in <100ms
+      // and gets the AI-quality upgrade silently.
+      if (mealsViewMode === 'days') {
+        if (!s.isPro) {
+          trackPaywall('meals_3day_refresh');
+          showT('3-day plan is a Pro feature — upgrade to refresh');
+          return;
+        }
+      } else if (aiRecipesRemaining() <= 0) {
+        trackPaywall('meals_refresh_quota');
+        showT(`Free plan: ${FREE_AI_RECIPES_PER_DAY} AI refreshes/day. Upgrade for unlimited.`);
+        return;
+      }
+
+      // Flip loading flag FIRST so the button label, in-page banner, and
+      // disabled state all switch in the same React tick. The user sees
+      // "Refreshing…" instantly — no ambiguity about whether work is happening.
       setMealsLoading(true);
+
+      // Step 1 — instant local fallback so the UI feels alive while AI works.
+      // Only applies to "By time" mode; the 3-day plan goes straight to AI.
+      let didShowFallback = false;
+      if (mealsViewMode === 'time') {
+        const householdAllergies = Array.from(new Set([...(s.allergies||[]), ...s.members.flatMap(m => m.allergies||[])]));
+        const householdDiets = Array.from(new Set([...(s.dietaryFilters||[]), ...s.members.flatMap(m => m.dietaryFilters||[])]));
+        const reshuffled = buildFallbackMealsForDay(
+          [...s.items].sort(() => Math.random() - 0.5),
+          mealPeriod,
+          s.members.find(member => (member.age ?? 99) < 5)?.name,
+          Math.floor(Math.random() * 3),
+          s.cuisines, householdDiets, householdAllergies,
+        ).filter((m: Meal) => !exclude.includes(m.name.toLowerCase()));
+        if (reshuffled.length > 0) {
+          setMeals(reshuffled);
+          didShowFallback = true;
+        }
+      }
+
+      // Step 2 — background AI fetch. The banner ("Finding fresh ideas with AI…")
+      // and the spinning button keep the user oriented. We only confirm
+      // "Refreshed ✓" AFTER AI lands so the success toast tracks reality.
+      let aiCount = 0;
+      let aiOk = false;
       try {
         if (mealsViewMode === 'days') {
           const nextPlan: PlannedDayMeals[] = [];
           const rolling = new Set(exclude);
           for (const meta of dayPlanMeta()) {
-            const r = await fetch('/api/meals', {
+            const r = await fetchWithTimeout('/api/meals', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 items: s.items, cuisines: s.cuisines, members: mealMembers,
                 mealType: mealPeriod, excludeMeals: Array.from(rolling),
-                count: 2, planningDay: meta.label, dayOffset: meta.dayOffset,
+                count: 6, planningDay: meta.label, dayOffset: meta.dayOffset,
               }),
             });
-            const data = r.ok ? await r.json() : { meals: [] };
+            const data = r?.ok ? await r.json() : { meals: [] };
             const dayMeals = (data.meals || []).filter((m: Meal) => !rolling.has(m.name.toLowerCase()));
             dayMeals.forEach((m: Meal) => rolling.add(m.name.toLowerCase()));
             nextPlan.push({ id: meta.id, label: meta.label, subtitle: meta.subtitle, meals: dayMeals });
+            aiCount += dayMeals.length;
+            if (r?.ok) aiOk = true;
           }
           setPlannedDays(nextPlan);
         } else {
-          const r = await fetch('/api/meals', {
+          const r = await fetchWithTimeout('/api/meals', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               items: s.items, cuisines: s.cuisines, members: mealMembers,
               mealType: mealPeriod, excludeMeals: exclude,
             }),
           });
-          const data = r.ok ? await r.json() : { meals: [] };
-          setMeals(data.meals || []);
+          const data = r?.ok ? await r.json() : { meals: [] };
+          if (r?.ok) {
+            aiOk = true;
+            consumeAiRecipeQuota(1);
+            logEvent('ai_recipes_fetched', { mode: 'refresh', count: (data.meals || []).length, remaining: aiRecipesRemaining() - 1 });
+          } else if (!r) {
+            logEvent('ai_recipes_timeout', { mode: 'refresh' });
+          }
+          // Only swap in AI results if non-empty — otherwise keep the fallback we already showed.
+          if ((data.meals || []).length > 0) {
+            setMeals(data.meals);
+            aiCount = data.meals.length;
+          }
         }
-        showT('Refreshed ✓');
       } finally {
         setMealsLoading(false);
+        // Toast wording matches what actually happened so the user can tell
+        // AI from fallback at a glance:
+        //   ✓ AI found N fresh ideas      → AI succeeded
+        //   ✓ Reshuffled — AI was slow    → fallback only (timeout)
+        //   ✓ Refreshed                   → AI ran but returned empty
+        if (aiOk && aiCount > 0) {
+          showT(`✓ AI found ${aiCount} fresh idea${aiCount === 1 ? '' : 's'}`);
+        } else if (didShowFallback) {
+          showT('✓ Reshuffled — AI was slow, showing local picks');
+        } else {
+          showT('✓ Refreshed');
+        }
       }
     };
 
@@ -2233,6 +2992,13 @@ export default function FridgeBee() {
             <button
               onClick={() => {
                 const cookedName = recipeScreen.name.toLowerCase();
+                logEvent('recipe_cooked', {
+                  name: recipeScreen.name,
+                  cuisine: (recipeScreen as any).cuisine || null,
+                  cookTime: (recipeScreen as any).cookTime || null,
+                  ingredients: recipeScreen.ingredients || [],
+                  source: (recipeScreen as any).source || 'ai',
+                });
                 up({
                   cookedMeals: [
                     ...s.cookedMeals.filter(meal => meal.name.toLowerCase() !== cookedName),
@@ -2286,8 +3052,236 @@ export default function FridgeBee() {
     });
     const hasPrefs = activePrefs.length > 0;
 
+    // ── Helpers for the redesigned cards ───────────────────────────────────────
+    // "Yaya" in the spec = the household's first kid. We label the safe-tag with
+    // the actual member name so it reads naturally for any family.
+    const yayaMember = s.members.find(m => m.isKid || (m.age != null && m.age < 12));
+    const yayaName = yayaMember?.name?.trim() || null;
+    const isYayaSafe = (meal: Meal) =>
+      yayaName ? (meal.safeFor || []).some(n => n.toLowerCase() === yayaName.toLowerCase()) : false;
+
+    // Dinner-upgrade copy adapts to who's actually in the household.
+    //  · Named kid       → "What's <kid> eating tonight?"
+    //  · Unnamed kid     → "What's your little one eating tonight?"
+    //  · Adult member    → "What's <name> eating tonight?" (e.g. partner)
+    //  · Solo user       → "What's for dinner tonight?"
+    const dinnerUpgradeCopy = (() => {
+      const otherAdult = s.members.find(m => !m.isKid && (m.age == null || m.age >= 12));
+      const otherName = otherAdult?.name?.trim() || null;
+      if (yayaName) {
+        return {
+          title: `What's ${yayaName} eating tonight?`,
+          body: `Pro sends you a dinner suggestion at 5:30pm — based on ${yayaName}'s preferences and what's about to expire.`,
+        };
+      }
+      if (yayaMember) {
+        return {
+          title: `What's your little one eating tonight?`,
+          body: `Pro sends you a dinner suggestion at 5:30pm — based on your household and what's about to expire.`,
+        };
+      }
+      if (otherName) {
+        return {
+          title: `What's ${otherName} eating tonight?`,
+          body: `Pro sends you a dinner suggestion at 5:30pm — based on ${otherName}'s preferences and what's about to expire.`,
+        };
+      }
+      if (s.members.length > 0) {
+        return {
+          title: `What's for dinner tonight?`,
+          body: `Pro sends you a dinner suggestion at 5:30pm — based on your household's preferences and what's about to expire.`,
+        };
+      }
+      // Solo user — no household members at all
+      return {
+        title: `What's for dinner tonight?`,
+        body: `Pro sends you a dinner suggestion at 5:30pm — based on your preferences and what's about to expire.`,
+      };
+    })();
+
+    // The most-urgent expiring fridge item (≤1 day). Drives the green nudge banner.
+    const anchorExpiringItem = [...s.items]
+      .filter(it => daysUntil(it.expiry) <= 1)
+      .sort((a, b) => daysUntil(a.expiry) - daysUntil(b.expiry))[0];
+
+    // Split a recipe's ingredients into two groups: those in the fridge AND
+    // expiring within 3 days (amber pills) and those in the fridge but stable
+    // (neutral pills). Ingredients not in the fridge at all are dropped — this
+    // is the "FROM YOUR FRIDGE" row, by definition.
+    // Staples / basic seasonings to exclude from FROM YOUR FRIDGE pills.
+    // The user expects pills to show interesting ingredients (paneer, methi,
+    // brinjal) — not salt/oil/water/spices. Even if they're literally in the
+    // fridge, surfacing them adds noise without value.
+    const PILL_EXCLUDE_STAPLES = new Set([
+      'salt','sugar','oil','olive oil','sunflower oil','cooking oil','ghee','butter',
+      'water','vinegar','soy sauce','black pepper','pepper','cumin','turmeric',
+      'chilli','chilli powder','red chilli','green chilli','garam masala','cardamom',
+      'clove','cloves','cinnamon','bay leaf','mustard seeds','curry leaves',
+      'fenugreek seeds','asafoetida','hing','coriander powder','flour','wheat flour',
+      'maida','all purpose flour','baking powder','baking soda','honey','jaggery',
+      'cornflour','corn flour','corn starch','spices','seasoning',
+    ]);
+    const pillsForMeal = (meal: Meal) => {
+      const expSet = new Set(s.items.filter(it => daysUntil(it.expiry) <= 3).map(it => it.name.toLowerCase()));
+      const fridgeArr = s.items.map(it => it.name.toLowerCase());
+      const expiring: string[] = [];
+      const neutral: string[] = [];
+      const seen = new Set<string>();
+      for (const ing of meal.ingredients) {
+        const cleaned = cleanIngredientName(ing);
+        const key = cleaned.toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        // Drop staples — pills should highlight HERO ingredients, not noise.
+        if (PILL_EXCLUDE_STAPLES.has(key)) continue;
+        const match = fridgeArr.find(fname => key === fname || key.includes(fname) || fname.includes(key));
+        if (!match) continue;
+        // Also drop if the matched fridge item is itself a staple (e.g. recipe
+        // uses "Tomato salt" and matched fridge item is "Salt").
+        if (PILL_EXCLUDE_STAPLES.has(match)) continue;
+        if (expSet.has(match)) expiring.push(cleaned);
+        else neutral.push(cleaned);
+      }
+      return { expiring, neutral };
+    };
+
+    // The two recipes shown for the current "By time" view.
+    const bestPick = displayMeals[0];
+    const alsoWorks = displayMeals[1];
+
+    // Does an anchor expiring item appear in BOTH cards? Drives the green banner.
+    const anchorInBoth = (() => {
+      if (!anchorExpiringItem || !bestPick || !alsoWorks) return false;
+      const lc = anchorExpiringItem.name.toLowerCase();
+      const has = (m: Meal) => m.ingredients.some(ing => {
+        const c = cleanIngredientName(ing).toLowerCase();
+        return c.includes(lc) || lc.includes(c);
+      });
+      return has(bestPick) && has(alsoWorks);
+    })();
+
+    const renderRecipeCard = (meal: Meal, kind: 'best' | 'also') => {
+      const { expiring, neutral } = pillsForMeal(meal);
+      const yaya = isYayaSafe(meal) && yayaName;
+      const totalPills = expiring.length + neutral.length;
+      return (
+        <div style={{ background:'var(--white)', border: kind === 'best' ? '1.5px solid #C07A20' : '0.5px solid var(--bd)', borderRadius:18, padding:16 }}>
+          <div style={{ fontSize:10, fontWeight:800, color: kind === 'best' ? '#C07A20' : 'var(--mu)', letterSpacing:'.8px', marginBottom:10 }}>
+            {kind === 'best' ? 'BEST PICK' : 'ALSO WORKS'}
+          </div>
+          <div style={{ display:'flex', gap:12, marginBottom:12 }}>
+            <div style={{ width:56, height:56, borderRadius:14, background:'#FEF3E2', display:'flex', alignItems:'center', justifyContent:'center', fontSize:30, flexShrink:0 }}>{meal.emoji}</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontWeight:800, fontSize:16, color:'var(--ink)', lineHeight:1.25 }}>{meal.name}</div>
+              <div style={{ display:'flex', gap:10, flexWrap:'wrap', marginTop:6, alignItems:'center' }}>
+                <span style={{ fontSize:12, color:'var(--mu)' }}>⏱ {meal.cookTime} min</span>
+                <span style={{ fontSize:12, color:'var(--mu)' }}>🔥 {meal.kcal} kcal</span>
+                {yaya && (
+                  <span style={{ background:'#EAF3DE', color:'#3B6D11', padding:'3px 8px', borderRadius:8, fontSize:11, fontWeight:700 }}>
+                    {yayaName}-safe
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          {totalPills > 0 && (
+            <>
+              <div style={{ fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8 }}>FROM YOUR FRIDGE</div>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:14 }}>
+                {expiring.map((p, i) => (
+                  <span key={`e-${i}`} style={{ background:'#FAEEDA', color:'#854F0B', border:'1px solid #EF9F27', borderRadius:999, padding:'4px 10px', fontSize:11, fontWeight:700 }}>{p}</span>
+                ))}
+                {neutral.slice(0, Math.max(0, 5 - expiring.length)).map((p, i) => (
+                  <span key={`n-${i}`} style={{ background:'var(--wa)', color:'var(--ink)', borderRadius:999, padding:'4px 10px', fontSize:11, fontWeight:700 }}>{p}</span>
+                ))}
+              </div>
+            </>
+          )}
+          <div style={{ display:'flex', gap:8 }}>
+            <button
+              onClick={() => setRecipeScreen(meal)}
+              style={{ flex:1, background:'#1A1A1A', color:'#fff', border:'none', borderRadius:14, padding:'12px', fontSize:14, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
+            >
+              ▶ Cook this
+            </button>
+            <button
+              onClick={() => markNotToday(meal.name)}
+              title="Skip for today — may show again later"
+              style={{ background:'var(--white)', color:'var(--mu)', border:'1.5px solid var(--bd)', borderRadius:14, padding:'12px 12px', fontSize:12, fontWeight:700, fontFamily:'inherit', cursor:'pointer', flexShrink:0 }}
+            >
+              Not today
+            </button>
+            <button
+              onClick={() => markNotForMe(meal.name)}
+              title="Hide this recipe — won't suggest again"
+              style={{ background:'var(--white)', color:'var(--mu)', border:'1.5px solid var(--bd)', borderRadius:14, padding:'12px 12px', fontSize:12, fontWeight:700, fontFamily:'inherit', cursor:'pointer', flexShrink:0 }}
+            >
+              ✕ Not for me
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    const renderPlanRow = (meal: Meal, total: number, idx: number, onSwap: () => void, muted = false) => {
+      const yaya = isYayaSafe(meal) && yayaName;
+      const slot = (meal.mealType || mealPeriod || 'lunch').toLowerCase();
+      const slotLabel =
+        slot === 'breakfast' ? '🍳 Breakfast · 7–9am' :
+        slot === 'lunch' ? '🥗 Lunch · 12–2pm' :
+        '🍽 Dinner · 6–8pm';
+      return (
+        <div style={{ background:'var(--white)', border:'0.5px solid var(--bd)', borderRadius:16, padding:14 }}>
+          <div style={{ fontSize:11, fontWeight:800, color:'var(--mu)', letterSpacing:'.6px', marginBottom:10 }}>{slotLabel}</div>
+          <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+            <div style={{ width:44, height:44, borderRadius:12, background:'#FEF3E2', display:'flex', alignItems:'center', justifyContent:'center', fontSize:24, flexShrink:0 }}>{meal.emoji}</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontWeight:800, fontSize:15, color:'var(--ink)', lineHeight:1.2 }}>{meal.name}</div>
+              <div style={{ display:'flex', gap:10, flexWrap:'wrap', marginTop:5, alignItems:'center' }}>
+                <span style={{ fontSize:11.5, color:'var(--mu)' }}>⏱ {meal.cookTime} min</span>
+                <span style={{ fontSize:11.5, color:'var(--mu)' }}>🔥 {meal.kcal} kcal</span>
+                {yaya && (
+                  <span style={{ background:'#EAF3DE', color:'#3B6D11', padding:'2px 7px', borderRadius:7, fontSize:10.5, fontWeight:700 }}>
+                    {yayaName}-safe
+                  </span>
+                )}
+              </div>
+            </div>
+            {!muted && (
+              total > 1 ? (
+                <button
+                  onClick={onSwap}
+                  style={{ background:'var(--white)', color:'#C07A20', border:'1.5px solid #C07A20', borderRadius:12, padding:'8px 12px', fontSize:12, fontWeight:800, fontFamily:'inherit', cursor:'pointer', flexShrink:0 }}
+                >
+                  ⇄ Swap
+                </button>
+              ) : (
+                <span style={{ fontSize:11, color:'var(--mu)', maxWidth:96, textAlign:'right' }}>Only one option</span>
+              )
+            )}
+          </div>
+          {!muted && total > 1 && (
+            <div style={{ marginTop:10, fontSize:11, color:'var(--mu)', textAlign:'right' }}>
+              Option {(idx % total) + 1} of {total}
+            </div>
+          )}
+          {!muted && (
+            <div style={{ marginTop:10 }}>
+              <button
+                onClick={() => setRecipeScreen(meal)}
+                style={{ width:'100%', background:'#1A1A1A', color:'#fff', border:'none', borderRadius:12, padding:'10px', fontSize:13, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
+              >
+                ▶ Cook this
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    };
+
     return (
       <div className="screen" style={{ background:'var(--cr)', paddingBottom:20 }}>
+        {/* Header */}
         <div style={{ padding:'18px 16px 10px', background:'var(--white)', borderBottom:'1.5px solid var(--bd)' }}>
           <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
             <div>
@@ -2297,41 +3291,60 @@ export default function FridgeBee() {
             <button
               onClick={refreshMeals}
               disabled={mealsLoading}
-              style={{ display:'flex', alignItems:'center', gap:8, background:'#FFF5F0', border:'1.5px solid #F4C8C1', borderRadius:16, padding:'10px 14px', cursor: mealsLoading ? 'wait' : 'pointer', fontFamily:'inherit', color:'#C94A3A', fontWeight:700, fontSize:14 }}
+              aria-busy={mealsLoading}
+              style={{
+                display:'flex',
+                alignItems:'center',
+                gap:8,
+                background: mealsLoading ? '#FFE9C9' : '#FEF3E2',
+                border:'1.5px solid #C07A20',
+                borderRadius:14,
+                padding:'10px 14px',
+                cursor: mealsLoading ? 'wait' : 'pointer',
+                fontFamily:'inherit',
+                color:'#C07A20',
+                fontWeight:700,
+                fontSize:13,
+                transition:'background 0.15s ease',
+                minWidth: 118, // prevents the button width from jumping when label changes
+                justifyContent:'center',
+              }}
             >
               <span style={{ display:'inline-block', animation: mealsLoading ? 'spin 1s linear infinite' : 'none', transformOrigin:'50% 50%' }}>↻</span>
-              Refresh
+              {mealsLoading ? 'Refreshing…' : 'Refresh'}
             </button>
           </div>
-          {/* Preferences banner — auto-hides 4s after the meals tab opens. */}
-          {hasPrefs && prefsBannerVisible && (
-            <div style={{ marginTop:10, display:'flex', alignItems:'flex-start', gap:8, background:'#F0FDF4', border:'1px solid #86EFAC', borderRadius:14, padding:'10px 12px', animation:'fadeIn .25s' }}>
-              <span style={{ fontSize:16, flexShrink:0 }}>✅</span>
-              <div style={{ fontSize:12, color:'#14532D', fontWeight:600, lineHeight:1.5 }}>
-                <strong>Preferences applied:</strong> {activePrefs.slice(0,4).join(' · ')}
-                {activePrefs.length > 4 && ` · +${activePrefs.length - 4} more`}
+          {/* Quota indicator (Free) — friendly grace banner for new users,
+              cap warning once the grace ends. */}
+          {!s.isPro && (() => {
+            if (inWelcomeGrace()) {
+              const started = s.joinedAt ? new Date(s.joinedAt) : new Date();
+              const ageDays = Math.floor((Date.now() - started.getTime()) / 86400000);
+              const daysLeft = Math.max(1, WELCOME_GRACE_DAYS - ageDays);
+              return (
+                <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8, background:'#EAF3DE', border:'0.5px solid #C0DD97', borderRadius:14, padding:'10px 12px' }}>
+                  <span style={{ fontSize:14 }}>🎁</span>
+                  <div style={{ fontSize:12, color:'#27500A', fontWeight:700, lineHeight:1.4 }}>
+                    Welcome week — unlimited AI recipes for the next {daysLeft} day{daysLeft===1?'':'s'}.
+                  </div>
+                </div>
+              );
+            }
+            const left = aiRecipesRemaining();
+            return (
+              <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8, background: left > 0 ? '#FEF3E2' : '#FFF5F0', border:'0.5px solid', borderColor: left > 0 ? '#C07A20' : '#F4C8C1', borderRadius:14, padding:'10px 12px' }}>
+                <span style={{ fontSize:14 }}>{left > 0 ? '⭐' : '🔒'}</span>
+                <div style={{ fontSize:12, color: left > 0 ? '#C07A20' : '#8C2A1F', fontWeight:700, lineHeight:1.4 }}>
+                  {left > 0
+                    ? `Free plan: ${left} of ${FREE_AI_RECIPES_PER_DAY} AI refresh${left===1?'':'es'} left today.`
+                    : `You've used all ${FREE_AI_RECIPES_PER_DAY} AI refreshes today. Upgrade to Pro for unlimited.`}
+                </div>
               </div>
-            </div>
-          )}
-          {/* Paywall — meals page hero */}
-          <div style={{ marginTop:10 }}>
-            <PaywallChip
-              trigger="meals_top"
-              label="Unlimited AI recipes — Pro Beta"
-              sublabel="Smarter weekly variety · 30% off forever"
-              onTrack={() => trackPaywall('meals_top')}
-            />
-          </div>
-          {!hasPrefs && (
-            <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8, background:'var(--wa)', borderRadius:14, padding:'10px 12px' }}>
-              <span style={{ fontSize:14 }}>💡</span>
-              <div style={{ fontSize:12, color:'var(--mu)' }}>
-                Add dietary preferences &amp; family members in <strong>Profile</strong> for personalised meals.
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
 
+        {/* By Time / 3-day toggle */}
         <div style={{ padding:'12px 16px', background:'var(--white)', borderBottom:'1px solid var(--bd)' }}>
           <div style={{ display:'flex', gap:8 }}>
             {([
@@ -2339,68 +3352,43 @@ export default function FridgeBee() {
               ['days', '3-day plan'],
             ] as const).map(([mode, label]) => {
               const active = mealsViewMode === mode;
+              const locked = mode === 'days' && !s.isPro;
               return (
                 <button
                   key={mode}
-                  onClick={() => setMealsViewMode(mode)}
+                  onClick={() => {
+                    // Locked tab is still tappable — switching to it shows the
+                    // upgrade card front-and-centre (handled in the body) so the
+                    // user has a clear path to unlock. Previously they'd just
+                    // see a toast and bounce back, which is what the user hit.
+                    if (locked) trackPaywall('meals_3day_tab');
+                    setMealsViewMode(mode);
+                  }}
                   style={{
                     flex:1,
                     padding:'10px 12px',
                     borderRadius:14,
                     border:'1.5px solid',
-                    borderColor: active ? '#C94A3A' : 'var(--bd)',
-                    background: active ? '#FFF5F0' : 'var(--wa)',
-                    color: active ? '#C94A3A' : 'var(--ink)',
+                    borderColor: active ? '#C07A20' : 'var(--bd)',
+                    background: active ? '#FEF3E2' : 'var(--white)',
+                    color: active ? '#C07A20' : 'var(--ink)',
                     fontWeight:800,
                     fontSize:13,
                     cursor:'pointer',
                     fontFamily:'inherit',
+                    opacity: locked ? 0.92 : 1,
                   }}
                 >
-                  {label}
+                  {locked ? `🔒 ${label}` : label}
                 </button>
               );
             })}
           </div>
         </div>
 
-        {mealsViewMode === 'days' && (
-          <>
-            <div style={{ padding:'10px 16px 0', background:'var(--white)' }}>
-              <PaywallChip
-                trigger="meals_3day_plan"
-                label="3-day meal plan — Pro Beta"
-                sublabel="Plan a week of meals · 30% off forever"
-                onTrack={() => trackPaywall('meals_3day_plan')}
-              />
-            </div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10, padding:'14px 16px', background:'var(--white)', borderBottom:'1px solid var(--bd)' }}>
-              {dayPlanMeta().map(day => {
-                const active = selectedPlanDay === day.id;
-                return (
-                  <button
-                    key={day.id}
-                    onClick={() => setSelectedPlanDay(day.id)}
-                    style={{
-                      background: active ? '#FFF5F0' : 'var(--wa)',
-                      border:`1.5px solid ${active ? '#F4C8C1' : 'var(--bd)'}`,
-                      borderRadius:18,
-                      padding:'12px 8px',
-                      cursor:'pointer',
-                      fontFamily:'inherit',
-                    }}
-                  >
-                    <div style={{ fontSize:13, fontWeight:800, color: active ? '#C94A3A' : 'var(--ink)' }}>{day.label}</div>
-                    <div style={{ fontSize:10, marginTop:4, color: active ? '#C94A3A' : 'var(--mu)' }}>{day.subtitle}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </>
-        )}
-
-        {mealsViewMode === 'time' && (
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:10, padding:'14px 16px', background:'var(--white)', borderBottom:'1px solid var(--bd)' }}>
+        {/* Slot/Day tabs */}
+        {mealsViewMode === 'time' ? (
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:8, padding:'14px 16px', background:'var(--white)', borderBottom:'1px solid var(--bd)' }}>
             {MEAL_PERIODS.map(period => {
               const active = mealPeriod === period.id;
               return (
@@ -2408,17 +3396,39 @@ export default function FridgeBee() {
                   key={period.id}
                   onClick={() => setMealPeriod(period.id)}
                   style={{
-                    background: active ? '#FFF5F0' : 'var(--wa)',
-                    border:`1.5px solid ${active ? '#F4C8C1' : 'var(--bd)'}`,
-                    borderRadius:18,
-                    padding:'12px 6px',
+                    background: active ? '#FEF3E2' : 'var(--white)',
+                    border:`1.5px solid ${active ? '#C07A20' : 'var(--bd)'}`,
+                    borderRadius:14,
+                    padding:'10px 6px',
                     cursor:'pointer',
                     fontFamily:'inherit',
                   }}
                 >
-                  <div style={{ fontSize:20, marginBottom:6 }}>{period.emoji}</div>
-                  <div style={{ fontSize:12, fontWeight:800, color: active ? '#C94A3A' : 'var(--ink)' }}>{period.label}</div>
-                  <div style={{ fontSize:10, marginTop:3, color: active ? '#C94A3A' : 'var(--mu)' }}>{period.time}</div>
+                  <div style={{ fontSize:18, marginBottom:4 }}>{period.emoji}</div>
+                  <div style={{ fontSize:12, fontWeight:800, color: active ? '#C07A20' : 'var(--ink)' }}>{period.label}</div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10, padding:'14px 16px', background:'var(--white)', borderBottom:'1px solid var(--bd)' }}>
+            {dayPlanMeta().map(day => {
+              const active = selectedPlanDay === day.id;
+              return (
+                <button
+                  key={day.id}
+                  onClick={() => setSelectedPlanDay(day.id)}
+                  style={{
+                    background: active ? '#FEF3E2' : 'var(--white)',
+                    border:`1.5px solid ${active ? '#C07A20' : 'var(--bd)'}`,
+                    borderRadius:14,
+                    padding:'12px 8px',
+                    cursor:'pointer',
+                    fontFamily:'inherit',
+                  }}
+                >
+                  <div style={{ fontSize:13, fontWeight:800, color: active ? '#C07A20' : 'var(--ink)' }}>{day.label}</div>
+                  <div style={{ fontSize:10, marginTop:4, color: active ? '#C07A20' : 'var(--mu)' }}>{day.subtitle}</div>
                 </button>
               );
             })}
@@ -2426,14 +3436,20 @@ export default function FridgeBee() {
         )}
 
         <div style={{ padding:'16px' }}>
-          {/* Slim 'AI is generating' indicator that doesn't block the page —
-              fallback recipes show immediately, fresh ones replace when Claude responds. */}
           {mealsLoading && s.items.length > 0 && (
-            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', marginBottom:12, background:'#FFF9EF', border:'1px solid #F5C44E', borderRadius:12, fontSize:12, color:'var(--mu)' }}>
-              <div style={{ animation:'bee-bob 1.2s ease-in-out infinite', display:'inline-block' }}><BeeSVG size={20}/></div>
-              <span>Finding fresh ideas with AI… showing quick picks below in the meantime.</span>
+            <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', marginBottom:12, background:'#FFF9EF', border:'1.5px solid #F5C44E', borderRadius:14, fontSize:13, color:'#7A4F00', fontWeight:600 }}>
+              <div style={{ animation:'bee-bob 1.2s ease-in-out infinite', display:'inline-block', flexShrink:0 }}><BeeSVG size={22}/></div>
+              <div style={{ lineHeight:1.4 }}>
+                <div style={{ fontWeight:800 }}>Refreshing your meal ideas…</div>
+                <div style={{ fontSize:11, color:'#A26A00', fontWeight:500, marginTop:2 }}>
+                  {mealsViewMode === 'days'
+                    ? 'AI is planning your 3-day menu — usually 5–10 seconds.'
+                    : 'Showing local picks while AI cooks up smarter ideas.'}
+                </div>
+              </div>
             </div>
           )}
+
           {s.items.length === 0 ? (
             <div style={{ textAlign:'center', padding:'40px 0', color:'var(--mu)' }}>
               <div style={{ fontSize:40, marginBottom:12 }}>🍽️</div>
@@ -2441,163 +3457,178 @@ export default function FridgeBee() {
             </div>
           ) : mealsViewMode === 'days' ? (
             (() => {
-              const activeDay = plannedDays.find(day => day.id === selectedPlanDay) || plannedDays[0];
-              const topPick = activeDay?.meals?.[0];
-              const otherMeals = activeDay?.meals?.slice(1) || [];
-
-              if (!activeDay) {
+              // Free users on 3-day tab: full-width upgrade card with no plan
+              // shown. They unlock here, then see real recipes.
+              if (!s.isPro) {
                 return (
-                  <div style={{ background:'var(--white)', border:'1.5px solid var(--bd)', borderRadius:20, padding:'26px 18px', textAlign:'center' }}>
-                    <div style={{ fontSize:34, marginBottom:10 }}>🍳</div>
-                    <div style={{ fontWeight:800, fontSize:16, color:'var(--ink)', marginBottom:6 }}>No 3-day plan yet</div>
-                    <div style={{ fontSize:13, color:'var(--mu)', lineHeight:1.5 }}>Refresh to generate meal ideas for the next few days.</div>
+                  <div style={{ background:'var(--white)', border:'1.5px solid #C07A20', borderRadius:18, padding:20 }}>
+                    <div style={{ width:60, height:60, borderRadius:16, background:'#FEF3E2', display:'flex', alignItems:'center', justifyContent:'center', fontSize:32, marginBottom:16 }}>📅</div>
+                    <div style={{ fontWeight:800, fontSize:20, color:'var(--ink)', marginBottom:10, lineHeight:1.25 }}>Plan 3 days ahead</div>
+                    <div style={{ fontSize:13.5, color:'var(--mu)', lineHeight:1.6, marginBottom:18 }}>
+                      See recipes for Today, Tomorrow and Day after — each picked from what's about to expire in your fridge. Swap any suggestion in one tap.
+                    </div>
+                    <ul style={{ margin:'0 0 18px 0', paddingLeft:20, fontSize:13, color:'var(--ink)', lineHeight:1.7 }}>
+                      <li>3-day rolling plan, refreshed daily</li>
+                      <li>Swap any suggestion to taste</li>
+                      <li>Prioritises soonest-expiring items</li>
+                      {yayaName && <li>{yayaName}-safe filtering across all picks</li>}
+                    </ul>
+                    <button
+                      onClick={() => startProTrial('plan_locked_main')}
+                      style={{ width:'100%', background:'#C07A20', color:'#fff', border:'none', borderRadius:14, padding:'14px', fontWeight:800, fontSize:15, cursor:'pointer', fontFamily:'inherit' }}
+                    >
+                      Start 7-day free trial →
+                    </button>
+                    <div style={{ marginTop:10, textAlign:'center', fontSize:11.5, color:'var(--mu)' }}>Then $3.99/month — cancel anytime</div>
                   </div>
                 );
               }
+              const activeDay = plannedDays.find(day => day.id === selectedPlanDay) || plannedDays[0];
+              if (!activeDay || !activeDay.meals.length) {
+                return (
+                  <div style={{ background:'var(--white)', border:'0.5px solid var(--bd)', borderRadius:18, padding:'26px 18px', textAlign:'center' }}>
+                    <div style={{ fontSize:34, marginBottom:10 }}>🍳</div>
+                    <div style={{ fontWeight:800, fontSize:16, color:'var(--ink)', marginBottom:6 }}>No 3-day plan yet</div>
+                    <div style={{ fontSize:13, color:'var(--mu)', lineHeight:1.5 }}>Refresh to generate meal ideas.</div>
+                  </div>
+                );
+              }
+              const dayId = activeDay.id;
+              const total = activeDay.meals.length;
+              const idx = (planSwapIdx[dayId] || 0) % total;
+              const anim = planSwapAnim[dayId];
+              const current = activeDay.meals[idx];
+              const rest = activeDay.meals.filter((_, i) => i !== idx);
+
+              const onSwap = () => {
+                if (total <= 1) {
+                  showT('Only one option with current fridge items');
+                  return;
+                }
+                logEvent('plan_recipe_swapped', { day: dayId, from: current?.name });
+                setPlanSwapAnim(prev => ({ ...prev, [dayId]: 'out' }));
+                showT('Finding next best match from your fridge…');
+                setTimeout(() => {
+                  setPlanSwapIdx(prev => ({ ...prev, [dayId]: ((prev[dayId] || 0) + 1) % total }));
+                  setPlanSwapAnim(prev => ({ ...prev, [dayId]: 'in' }));
+                  // Two-frame settle so the "in" position renders before transitioning to rest.
+                  requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                      setPlanSwapAnim(prev => ({ ...prev, [dayId]: null }));
+                    });
+                  });
+                }, 180);
+              };
+
+              const slideStyle: React.CSSProperties =
+                anim === 'out' ? { transform:'translateX(-12px)', opacity:0, transition:'transform .18s ease-out, opacity .18s ease-out' }
+                : anim === 'in' ? { transform:'translateX(12px)', opacity:0, transition:'none' }
+                : { transform:'translateX(0)', opacity:1, transition:'transform .22s ease-out, opacity .22s ease-out' };
+
+              const showUpgrade = !s.isPro && (selectedPlanDay === 'today' || selectedPlanDay === 'day-after');
 
               return (
-                <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-                  <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:12 }}>
-                    <div>
-                      <div style={{ fontSize:22, fontWeight:800, color:'var(--ink)' }}>{activeDay.label}</div>
-                      <div style={{ fontSize:12, color:'var(--mu)', marginTop:3 }}>{activeDay.subtitle}</div>
-                    </div>
-                    <span style={{ fontSize:11, fontWeight:800, color:'#C94A3A' }}>{activeDay.meals.length ? `${activeDay.meals.length} ideas` : 'No ideas'}</span>
+                <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+                  <div style={{ fontSize:11, fontWeight:800, color:'var(--mu)', letterSpacing:'1px' }}>
+                    {dayId === 'today' ? 'TODAY' : dayId === 'tomorrow' ? 'TOMORROW' : 'DAY AFTER TOMORROW'}
                   </div>
 
-                  {topPick ? (
-                    <div style={{ background:'var(--white)', border:'1.5px solid #F4C8C1', borderRadius:24, padding:18, position:'relative' }}>
-                      <div style={{ position:'absolute', top:16, right:16, background:'#FFF5F0', color:'#C94A3A', fontSize:10, fontWeight:800, padding:'4px 10px', borderRadius:999 }}>
-                        TOP PICK
-                      </div>
-                      <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:12 }}>
-                        <span style={{ fontSize:48, lineHeight:1 }}>{topPick.emoji}</span>
-                        <div style={{ flex:1, minWidth:0, paddingRight:80 }}>
-                          <div style={{ fontWeight:800, fontSize:18, color:'var(--ink)', lineHeight:1.25 }}>{topPick.name}</div>
-                          <div style={{ display:'flex', gap:12, flexWrap:'wrap', marginTop:8 }}>
-                            <span style={{ fontSize:12, color:'var(--mu)' }}>⏱ {topPick.cookTime} min</span>
-                            <span style={{ fontSize:12, color:'var(--mu)' }}>🔥 {topPick.kcal} kcal</span>
-                            <span style={{ fontSize:12, color:'#C94A3A', fontWeight:700 }}>💪 {topPick.protein}g P</span>
-                          </div>
+                  {/* Active swap card */}
+                  <div style={slideStyle}>
+                    {renderPlanRow(current, total, idx, onSwap)}
+                  </div>
+
+                  {/* Rest of day at low opacity — visual reassurance only */}
+                  {rest.length > 0 && (
+                    <div style={{ display:'flex', flexDirection:'column', gap:10, opacity:0.45, pointerEvents:'none' }}>
+                      {rest.slice(0, 3).map((meal, i) => (
+                        <div key={`${dayId}-rest-${i}`}>
+                          {renderPlanRow(meal, total, idx, () => {}, true)}
                         </div>
-                      </div>
-                      <p style={{ fontSize:13, color:'var(--mu)', lineHeight:1.55, marginBottom:14 }}>{topPick.description}</p>
-                      <div style={{ display:'flex', gap:8 }}>
-                        <button
-                          onClick={() => setRecipeScreen(topPick)}
-                          style={{ flex:1, background:'#C94A3A', color:'#fff', border:'none', borderRadius:16, padding:'14px', fontSize:15, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
-                        >
-                          ▶ Open recipe
-                        </button>
-                        <button
-                          onClick={() => markNotForMe(topPick.name)}
-                          title="Hide this recipe — won't suggest again"
-                          style={{ background:'var(--white)', color:'var(--mu)', border:'1.5px solid var(--bd)', borderRadius:16, padding:'14px 14px', fontSize:13, fontWeight:700, fontFamily:'inherit', cursor:'pointer', flexShrink:0 }}
-                        >
-                          ✕ Not for me
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ background:'var(--white)', border:'1.5px solid var(--bd)', borderRadius:20, padding:'24px 18px', textAlign:'center', color:'var(--mu)', fontSize:13 }}>
-                      Nothing new for this day yet.
+                      ))}
                     </div>
                   )}
 
-                  {otherMeals.length > 0 && (
-                    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-                      {otherMeals.map((meal, index) => (
-                        <div key={`${activeDay.id}-${meal.name}-${index}`} style={{ background:'var(--white)', border:'1.5px solid var(--bd)', borderRadius:20, padding:14 }}>
-                          <div style={{ display:'flex', gap:10, alignItems:'flex-start', marginBottom:10 }}>
-                            <span style={{ fontSize:36 }}>{meal.emoji}</span>
-                            <div style={{ flex:1, minWidth:0 }}>
-                              <div style={{ fontSize:16, fontWeight:800, color:'var(--ink)', lineHeight:1.25 }}>{meal.name}</div>
-                              <div style={{ display:'flex', gap:10, flexWrap:'wrap', marginTop:6 }}>
-                                <span style={{ fontSize:12, color:'var(--mu)' }}>⏱ {meal.cookTime} min</span>
-                                <span style={{ fontSize:12, color:'var(--mu)' }}>🔥 {meal.kcal} kcal</span>
-                                <span style={{ fontSize:12, color:'#C94A3A', fontWeight:700 }}>💪 {meal.protein}g P</span>
-                              </div>
-                            </div>
-                          </div>
-                          <p style={{ fontSize:13, color:'var(--mu)', lineHeight:1.5, marginBottom:10 }}>{meal.description}</p>
-                          <div style={{ display:'flex', gap:8 }}>
-                            <button
-                              onClick={() => setRecipeScreen(meal)}
-                              style={{ flex:1, background:'#C94A3A', color:'#fff', border:'none', borderRadius:14, padding:'12px', fontSize:14, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
-                            >
-                              ▶ Open recipe
-                            </button>
-                            <button
-                              onClick={() => markNotForMe(meal.name)}
-                              title="Hide this recipe — won't suggest again"
-                              style={{ background:'var(--white)', color:'var(--mu)', border:'1.5px solid var(--bd)', borderRadius:14, padding:'12px', fontSize:12, fontWeight:700, fontFamily:'inherit', cursor:'pointer', flexShrink:0 }}
-                            >
-                              ✕ Not for me
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                  {showUpgrade && (
+                    <div style={{ background:'var(--white)', border:'1.5px solid #C07A20', borderRadius:18, padding:18 }}>
+                      <div style={{ width:52, height:52, borderRadius:14, background:'#FEF3E2', display:'flex', alignItems:'center', justifyContent:'center', fontSize:26, marginBottom:14 }}>🔔</div>
+                      <div style={{ fontWeight:800, fontSize:18, color:'var(--ink)', marginBottom:8 }}>{dinnerUpgradeCopy.title}</div>
+                      <div style={{ fontSize:13, color:'var(--mu)', lineHeight:1.55, marginBottom:14 }}>
+                        {dinnerUpgradeCopy.body}
+                      </div>
+                      <button
+                        onClick={() => startProTrial('plan_upgrade')}
+                        style={{ width:'100%', background:'var(--white)', color:'var(--ink)', border:'1.5px solid var(--bd)', borderRadius:14, padding:'13px', fontWeight:800, fontSize:14, cursor:'pointer', fontFamily:'inherit' }}
+                      >
+                        Start 7-day free trial →
+                      </button>
+                      <div style={{ marginTop:8, textAlign:'center', fontSize:11.5, color:'var(--mu)' }}>Then $3.99/month — cancel anytime</div>
                     </div>
                   )}
                 </div>
               );
             })()
-          ) : displayMeals.length === 0 ? (
-            <div style={{ background:'var(--white)', border:'1.5px solid var(--bd)', borderRadius:20, padding:'26px 18px', textAlign:'center' }}>
-              <div style={{ fontSize:34, marginBottom:10 }}>🍳</div>
-              <div style={{ fontWeight:800, fontSize:16, color:'var(--ink)', marginBottom:6 }}>No fresh meal ideas right now</div>
-              <div style={{ fontSize:13, color:'var(--mu)', lineHeight:1.5 }}>You already cooked the current suggestions. Refresh for new ideas or wait until the cooldown ends.</div>
-            </div>
           ) : (
-            <div style={{ display:'flex', flexDirection:'column', gap:18 }}>
-              {displayMeals.slice(0, 4).map((meal, index) => (
-                <div key={`${meal.name}-${index}`} style={{ background:'var(--white)', border:'1.5px solid #F4C8C1', borderRadius:24, padding:18, position:'relative' }}>
-                  {meal.usesExpiring && (
-                    <div style={{ position:'absolute', top:16, right:16, background:'#FEE2E2', color:'#C94A3A', fontSize:10, fontWeight:800, padding:'4px 10px', borderRadius:999 }}>
-                      USE TODAY
+            (() => {
+              const showUpgrade = mealPeriod === 'dinner' && !s.isPro;
+              if (!bestPick && !alsoWorks) {
+                return (
+                  <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+                    <div style={{ background:'var(--white)', border:'0.5px solid var(--bd)', borderRadius:18, padding:'26px 18px', textAlign:'center' }}>
+                      <div style={{ fontSize:34, marginBottom:10, animation:'bee-bob 1.2s ease-in-out infinite', display:'inline-block' }}>🐝</div>
+                      <div style={{ fontWeight:800, fontSize:16, color:'var(--ink)', marginBottom:6 }}>Loading…</div>
+                      <div style={{ fontSize:13, color:'var(--mu)', lineHeight:1.5 }}>Finding the best meal ideas from your fridge.</div>
+                    </div>
+                    {showUpgrade && (
+                      <div style={{ background:'var(--white)', border:'1.5px solid #C07A20', borderRadius:18, padding:18 }}>
+                        <div style={{ width:52, height:52, borderRadius:14, background:'#FEF3E2', display:'flex', alignItems:'center', justifyContent:'center', fontSize:26, marginBottom:14 }}>🔔</div>
+                        <div style={{ fontWeight:800, fontSize:18, color:'var(--ink)', marginBottom:8 }}>{dinnerUpgradeCopy.title}</div>
+                        <div style={{ fontSize:13, color:'var(--mu)', lineHeight:1.55, marginBottom:14 }}>
+                          {dinnerUpgradeCopy.body}
+                        </div>
+                        <button
+                          onClick={() => startProTrial('dinner_upgrade')}
+                          style={{ width:'100%', background:'#C07A20', color:'#fff', border:'none', borderRadius:14, padding:'13px', fontWeight:800, fontSize:14, cursor:'pointer', fontFamily:'inherit' }}
+                        >
+                          Start 7-day free trial →
+                        </button>
+                        <div style={{ marginTop:8, textAlign:'center', fontSize:11.5, color:'var(--mu)' }}>Then $3.99/month — cancel anytime</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              return (
+                <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+                  {/* Green expiry nudge — only when an anchor item appears in BOTH cards */}
+                  {anchorExpiringItem && anchorInBoth && (
+                    <div style={{ background:'#EAF3DE', border:'0.5px solid #C0DD97', borderRadius:14, padding:'12px 14px', color:'#27500A', fontSize:13, lineHeight:1.5, fontWeight:600 }}>
+                      <strong>{anchorExpiringItem.name}</strong> needs using today. Both picks below use it — choose either and nothing goes to waste.
                     </div>
                   )}
-                  <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:12 }}>
-                    <span style={{ fontSize:50, lineHeight:1 }}>{meal.emoji}</span>
-                    <div style={{ flex:1, minWidth:0, paddingRight: meal.usesExpiring ? 86 : 0 }}>
-                      <div style={{ fontWeight:800, fontSize:18, color:'var(--ink)', lineHeight:1.25 }}>{meal.name}</div>
-                      <div style={{ display:'flex', gap:12, flexWrap:'wrap', marginTop:8 }}>
-                        <span style={{ fontSize:12, color:'var(--mu)' }}>⏱ {meal.cookTime} min</span>
-                        <span style={{ fontSize:12, color:'var(--mu)' }}>🔥 {meal.kcal} kcal</span>
-                        <span style={{ fontSize:12, color:'#C94A3A', fontWeight:700 }}>💪 {meal.protein}g P</span>
+
+                  {bestPick && renderRecipeCard(bestPick, 'best')}
+                  {alsoWorks && renderRecipeCard(alsoWorks, 'also')}
+
+                  {showUpgrade && (
+                    <div style={{ background:'var(--white)', border:'1.5px solid #C07A20', borderRadius:18, padding:18 }}>
+                      <div style={{ width:52, height:52, borderRadius:14, background:'#FEF3E2', display:'flex', alignItems:'center', justifyContent:'center', fontSize:26, marginBottom:14 }}>🔔</div>
+                      <div style={{ fontWeight:800, fontSize:18, color:'var(--ink)', marginBottom:8 }}>{dinnerUpgradeCopy.title}</div>
+                      <div style={{ fontSize:13, color:'var(--mu)', lineHeight:1.55, marginBottom:14 }}>
+                        {dinnerUpgradeCopy.body}
                       </div>
-                      {(meal.safeFor && meal.safeFor.length > 0) && (
-                        <div style={{ marginTop:10, fontSize:12, color:'#15803D' }}>👶 {meal.safeFor[0]}-safe</div>
-                      )}
+                      <button
+                        onClick={() => startProTrial('dinner_upgrade')}
+                        style={{ width:'100%', background:'#C07A20', color:'#fff', border:'none', borderRadius:14, padding:'13px', fontWeight:800, fontSize:14, cursor:'pointer', fontFamily:'inherit' }}
+                      >
+                        Start 7-day free trial →
+                      </button>
+                      <div style={{ marginTop:8, textAlign:'center', fontSize:11.5, color:'var(--mu)' }}>Then $3.99/month — cancel anytime</div>
                     </div>
-                  </div>
-                  <p style={{ fontSize:13, color:'var(--mu)', lineHeight:1.55, marginBottom:14 }}>{meal.description}</p>
-                  <div style={{ fontSize:11, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8 }}>FROM YOUR FRIDGE</div>
-                  <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:16 }}>
-                    {meal.ingredients.slice(0, 5).map((ingredient, idx) => (
-                      <span key={`${ingredient}-${idx}`} style={{ background:'var(--wa)', borderRadius:999, padding:'6px 12px', fontSize:12, fontWeight:700, color:'var(--ink)' }}>
-                        {ingredient.split(' ').slice(0, 2).join(' ')}
-                      </span>
-                    ))}
-                  </div>
-                  <div style={{ display:'flex', gap:8 }}>
-                    <button
-                      onClick={() => setRecipeScreen(meal)}
-                      style={{ flex:1, background:'#C94A3A', color:'#fff', border:'none', borderRadius:16, padding:'14px', fontSize:15, fontWeight:800, fontFamily:'inherit', cursor:'pointer' }}
-                    >
-                      ▶ Cook this
-                    </button>
-                    <button
-                      onClick={() => markNotForMe(meal.name)}
-                      title="Hide this recipe — won't suggest again"
-                      style={{ background:'var(--white)', color:'var(--mu)', border:'1.5px solid var(--bd)', borderRadius:16, padding:'14px 16px', fontSize:13, fontWeight:700, fontFamily:'inherit', cursor:'pointer', flexShrink:0 }}
-                    >
-                      ✕ Not for me
-                    </button>
-                  </div>
+                  )}
                 </div>
-              ))}
-            </div>
+              );
+            })()
           )}
         </div>
       </div>
@@ -2921,7 +3952,30 @@ export default function FridgeBee() {
             <div>
               <div style={{ fontSize:10, fontWeight:800, color:'var(--mu)', letterSpacing:'.8px', marginBottom:8 }}>FRIDGE EFFICIENCY</div>
               <div style={{ fontSize:22, fontWeight:800, color:'var(--ink)', marginBottom:2 }}>{currency}{usedValue.toFixed(0)} used</div>
-              <div style={{ fontSize:18, fontWeight:800, color:'#C94A3A' }}>{currency}{wastedValue.toFixed(0)} wasted</div>
+              {s.itemsWasted > 0 ? (
+                <>
+                  <div style={{ fontSize:18, fontWeight:800, color:'#C94A3A' }}>{currency}{wastedValue.toFixed(0)} wasted</div>
+                  {/* Inline reset for users who tapped "Threw it" by mistake or
+                      have stale counters from earlier testing. One tap clears. */}
+                  <button
+                    onClick={() => {
+                      if (!confirm("Reset waste counters? This won't change your fridge contents.")) return;
+                      up({ itemsWasted: 0, wastedByCategory: {}, wasteStreak: Math.max(s.wasteStreak, 1) });
+                      logEvent('insights_reset', { reason: 'inline' });
+                      showT('Waste counters reset ✓');
+                    }}
+                    style={{
+                      marginTop:6, background:'transparent', border:'none',
+                      padding:0, fontSize:11, color:'var(--mu)',
+                      textDecoration:'underline', cursor:'pointer', fontFamily:'inherit',
+                    }}
+                  >
+                    Didn&apos;t waste anything? Reset →
+                  </button>
+                </>
+              ) : (
+                <div style={{ fontSize:13, fontWeight:600, color:'var(--sage)' }}>No waste yet 🌱</div>
+              )}
             </div>
           </div>
 
@@ -2933,9 +3987,11 @@ export default function FridgeBee() {
                 <span style={{ display:'flex', alignItems:'center', gap:4, fontSize:10, fontWeight:700, color:'var(--mu)' }}>
                   <span style={{ width:10, height:10, borderRadius:3, background:'#4A7C59', display:'inline-block' }}/>used
                 </span>
-                <span style={{ display:'flex', alignItems:'center', gap:4, fontSize:10, fontWeight:700, color:'var(--mu)' }}>
-                  <span style={{ width:10, height:10, borderRadius:3, background:'#C94A3A', display:'inline-block' }}/>wasted
-                </span>
+                {s.itemsWasted > 0 && (
+                  <span style={{ display:'flex', alignItems:'center', gap:4, fontSize:10, fontWeight:700, color:'var(--mu)' }}>
+                    <span style={{ width:10, height:10, borderRadius:3, background:'#C94A3A', display:'inline-block' }}/>wasted
+                  </span>
+                )}
               </div>
             </div>
             {!hasChartData ? (
@@ -2997,14 +4053,6 @@ export default function FridgeBee() {
             <div style={{ fontSize:12, color:'var(--mu)' }}>— Sent every Sunday, 9 PM</div>
           </div>
 
-          {/* Paywall — full insights breakdown */}
-          <PaywallChip
-            trigger="insights_full_breakdown"
-            label="Full insights — Pro Beta"
-            sublabel="Per-item waste history, monthly savings · 30% off forever"
-            onTrack={() => trackPaywall('insights_full_breakdown')}
-          />
-
         </div>
       </div>
     );
@@ -3013,10 +4061,6 @@ export default function FridgeBee() {
   // ── Profile screen ────────────────────────────────────────────────────────────
   function ScreenProfile() {
     const planLabel = authUser ? 'Saved account' : 'Guest demo';
-    const detectedCountry = s.country || detectCountry();
-    const countryName = COUNTRY_CURRENCY[detectedCountry]?.name || detectedCountry;
-    const COUNTRY_FLAGS: Record<string,string> = { IN:'🇮🇳', PK:'🇵🇰', SG:'🇸🇬', MY:'🇲🇾', AE:'🇦🇪', GB:'🇬🇧', AU:'🇦🇺', US:'🇺🇸' };
-    const countryFlag = COUNTRY_FLAGS[detectedCountry] || '🌍';
     function toggleSection(key: keyof typeof openProfileSections) {
       setOpenProfileSections(prev => ({ ...prev, [key]: !prev[key] }));
     }
@@ -3027,20 +4071,9 @@ export default function FridgeBee() {
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
             <span style={{fontSize:20}}>🐝</span>
             <span style={{fontSize:11,color:'var(--mu)',fontWeight:600}}>personalised for everyone</span>
-            <span style={{marginLeft:'auto', fontSize:11, color:'var(--mu)', fontWeight:600, display:'flex', alignItems:'center', gap:4}}>
-              <span style={{fontSize:14}}>{countryFlag}</span>{countryName}
-            </span>
           </div>
           <h1 style={{fontSize:24,color:'var(--ink)',marginBottom:2}}>fridge<span style={{color:'var(--bee)'}}>Bee</span></h1>
-          <p style={{fontSize:14,color:'var(--mu)',marginBottom:10}}>Who&apos;s eating tonight?</p>
-          <div style={{ marginBottom:14 }}>
-            <PaywallChip
-              trigger="profile_top_banner"
-              label="Pro Beta — early-bird pricing"
-              sublabel="Lock in 30% off forever before launch"
-              onTrack={() => trackPaywall('profile_top_banner')}
-            />
-          </div>
+          <p style={{fontSize:14,color:'var(--mu)',marginBottom:10}}>Today</p>
           {/* Avatar row */}
           <div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:16}}>
             {/* You (main user) */}
@@ -3065,15 +4098,23 @@ export default function FridgeBee() {
               </div>
             ))}
             {/* Add button */}
-            <div onClick={()=>{setEditMember({id:'',name:'',isKid:false,allergies:[],dislikes:[],dietaryFilters:[]});setShowMember(true);}}
+            <div onClick={()=>{
+              if (!s.isPro && s.members.length >= 1) {
+                trackPaywall('profile_avatar_addmore');
+                showT('Free plan supports 1 family member. Upgrade for unlimited.');
+                return;
+              }
+              setEditMember({id:'',name:'',isKid:false,allergies:[],dislikes:[],dietaryFilters:[]});
+              setShowMember(true);
+            }}
               style={{display:'flex',flexDirection:'column',alignItems:'center',gap:4,cursor:'pointer',flexShrink:0}}>
-              <div style={{width:52,height:52,borderRadius:26,background:'var(--wa)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,border:'2px dashed var(--bd)'}}>+</div>
-              <span style={{fontSize:11,fontWeight:700,color:'var(--mu)'}}>Add</span>
+              <div style={{width:52,height:52,borderRadius:26,background:'var(--wa)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,border:'2px dashed var(--bd)'}}>{!s.isPro && s.members.length >= 1 ? '🔒' : '+'}</div>
+              <span style={{fontSize:11,fontWeight:700,color:'var(--mu)'}}>{!s.isPro && s.members.length >= 1 ? 'Pro' : 'Add'}</span>
             </div>
           </div>
         </div>
         <div style={{padding:'16px'}}>
-          <ProfileSection isOpen={openProfileSections.about} onToggle={()=>toggleSection('about')} title="🧑 You" extra={`${COUNTRY_CURRENCY[s.country]?.name||s.country} · ${planLabel}`}>
+          <ProfileSection isOpen={openProfileSections.about} onToggle={()=>toggleSection('about')} title="🧑 You" extra={planLabel}>
             <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:16}}>
               <div style={{width:52,height:52,borderRadius:26,background:'var(--beel)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>🐝</div>
               <div>
@@ -3229,9 +4270,18 @@ export default function FridgeBee() {
 
           <ProfileSection isOpen={openProfileSections.household} onToggle={()=>toggleSection('household')} title="👨‍👩‍👧 Household" extra="Kids, allergies, and restrictions also guide recipe safety">
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-              <button onClick={()=>{setEditMember({id:'',name:'',isKid:false,allergies:[],dislikes:[],dietaryFilters:[]});setShowMember(true);}}
+              <button onClick={()=>{
+                // Free tier: 1 household member. Pro: unlimited.
+                if (!s.isPro && s.members.length >= 1) {
+                  trackPaywall('profile_household_addmore');
+                  showT('Free plan supports 1 family member. Upgrade for unlimited.');
+                  return;
+                }
+                setEditMember({id:'',name:'',isKid:false,allergies:[],dislikes:[],dietaryFilters:[]});
+                setShowMember(true);
+              }}
                 style={{background:'var(--beel)',border:'none',color:'var(--beed)',fontWeight:700,fontSize:13,padding:'6px 12px',borderRadius:8,cursor:'pointer',fontFamily:'inherit'}}>
-                + Add
+                {!s.isPro && s.members.length >= 1 ? '🔒 + Add (Pro)' : '+ Add'}
               </button>
             </div>
             {s.members.length===0
@@ -3258,6 +4308,7 @@ export default function FridgeBee() {
                         onClick={(e)=>{
                           e.stopPropagation();
                           if (!confirm(`Remove ${mb.name} from household?`)) return;
+                          logEvent('member_removed', { name: mb.name, isKid: !!mb.isKid, dietaryFilters: mb.dietaryFilters || [], allergies: mb.allergies || [] });
                           up({members:s.members.filter(x=>x.id!==mb.id)});
                           if (activeProfile===mb.id) setActiveProfile('me');
                           showT(`${mb.name} removed`);
@@ -3273,32 +4324,317 @@ export default function FridgeBee() {
                   ))}
                 </div>
             }
-            <div style={{ marginTop:12 }}>
-              <PaywallChip
-                trigger="profile_household_addmore"
-                label="Family mode — Pro Beta"
-                sublabel="Add more members with separate diets · 30% off forever"
-                onTrack={() => trackPaywall('profile_household_addmore')}
-              />
+          </ProfileSection>
+
+          <ProfileSection isOpen={openProfileSections.pro} onToggle={()=>toggleSection('pro')} title={s.isPro ? '⭐ FridgeBee Pro' : '⭐ FridgeBee Pro (preview)'} extra={s.isPro ? 'All Pro features unlocked' : '$3.99/mo · 30% off for beta testers'}>
+            <div className="card" style={{marginBottom:12, borderColor: s.isPro ? 'var(--sagel)' : 'var(--beel)', background: s.isPro ? '#F8FFFA' : '#FFF9EF', boxShadow:'none'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,marginBottom:10}}>
+                <div>
+                  <div style={{fontSize:14,fontWeight:800,color:'var(--ink)'}}>Beta Pro toggle</div>
+                  <div style={{fontSize:12,color:'var(--mu)',marginTop:2}}>Flip this on to unlock all Pro features locally so you can test the gating. No payment yet.</div>
+                </div>
+                <div onClick={()=>{
+                  const next = !s.isPro;
+                  // Same rich payload as startProTrial so the analytics view
+                  // doesn't have two formats — both end up in user_events.
+                  logEvent(next ? 'pro_beta_on' : 'pro_beta_off', {
+                    email: authUser?.email || null,
+                    is_guest: !authUser,
+                    members_count: s.members.length,
+                    items_count: s.items.length,
+                    country: s.country,
+                  });
+                  up({ isPro: next });
+                  showT(next
+                    ? (authUser ? 'Pro unlocked (beta) ✓' : 'Pro unlocked — sign in to save')
+                    : 'Pro disabled');
+                }}
+                  style={{width:52,height:28,borderRadius:14,cursor:'pointer',background:s.isPro?'var(--sage)':'var(--bd)',position:'relative',transition:'background .2s',flexShrink:0}}>
+                  <div style={{width:22,height:22,borderRadius:11,background:'#fff',position:'absolute',top:3,left:s.isPro?27:3,transition:'left .2s'}}/>
+                </div>
+              </div>
+              <ul style={{margin:0,paddingLeft:18,fontSize:12.5,color:'var(--ink)',lineHeight:1.7}}>
+                <li>Unlimited AI recipes (Free is capped at 3/day)</li>
+                <li>3-day meal plan</li>
+                <li>Multi-member household (Free includes you only)</li>
+                <li>Full insights breakdown + monthly digest</li>
+                <li>Priority support</li>
+              </ul>
             </div>
           </ProfileSection>
 
           <ProfileSection isOpen={openProfileSections.notifications} onToggle={()=>toggleSection('notifications')} title="🔔 Notifications">
-            {NOTIF_OPTIONS.map(opt=>{
-              const on = s.notifTimes[opt.key]!==undefined;
-              return (
-                <div key={opt.key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
-                  <div>
-                    <div style={{fontSize:13,fontWeight:600,color:'var(--ink)'}}>{opt.icon} {opt.label}</div>
-                    <div style={{fontSize:11,color:'var(--mu)'}}>{opt.desc}</div>
+            {(() => {
+              // Format a 24h "HH:MM" string into the user's locale (e.g.
+              // "08:00" → "8:00 AM" in US, "08:00" in many EU locales).
+              function prettyTime(hhmm?: string): string {
+                if (!hhmm) return '';
+                const [h, m] = hhmm.split(':').map(n => parseInt(n, 10));
+                if (Number.isNaN(h) || Number.isNaN(m)) return hhmm;
+                try {
+                  const d = new Date();
+                  d.setHours(h, m, 0, 0);
+                  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+                } catch {
+                  return hhmm;
+                }
+              }
+              // Sensible default per slot when the user first toggles it on.
+              function defaultTimeFor(key: string): string {
+                if (key === 'meal') return '17:30';
+                if (key === 'morning') return '08:00';
+                if (key === 'expiry') return '08:30';
+                if (key === 'restock') return '10:00';
+                return '08:00';
+              }
+              // Re-sync the subscription server-side whenever notifTimes change
+              // so the cron runs at the user's chosen time without delay.
+              async function syncPushSubscription(nextNotifTimes: Record<string,string>, opts: { silent?: boolean } = {}) {
+                if (typeof window === 'undefined') return;
+                if (Object.keys(nextNotifTimes).length === 0) {
+                  const result = await unsubscribePush();
+                  logEvent('push_unsubscribed', { reason: result.ok ? 'user' : (result.ok === false ? result.reason : 'unknown') });
+                  if (!opts.silent) showT('Notifications turned off');
+                  return;
+                }
+                // iOS Safari without home-screen install can't subscribe to push.
+                if (isIOSSafariBrowserTab()) {
+                  showT('On iPhone? Add FridgeBee to home screen first to enable push.');
+                  logEvent('push_subscribe_failed', { reason: 'ios-not-installed' });
+                  return;
+                }
+                const wasGranted = getPushPermission() === 'granted';
+                const result = await subscribePush({
+                  userId: authUser?.id,
+                  notifTimes: nextNotifTimes,
+                  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                  // Snapshot the parts of state the cron + test push need.
+                  // This makes push notifications work for guests too — the
+                  // server can build personalised nudges without ever reading
+                  // user_app_state.
+                  state: {
+                    items: s.items.map(it => ({
+                      name: it.name, expiry: it.expiry, qty: it.qty,
+                      unit: it.unit, added: it.added,
+                    })),
+                    members: s.members.map(m => ({ name: m.name, isKid: m.isKid, age: m.age })),
+                    name: s.name,
+                    cuisines: s.cuisines,
+                    itemsUsed: s.itemsUsed,
+                    itemsWasted: s.itemsWasted,
+                  },
+                });
+                if (result.ok) {
+                  if (!opts.silent) {
+                    showT(wasGranted ? 'Notifications updated ✓' : 'Notifications enabled ✓');
+                  }
+                  return;
+                }
+                logEvent('push_subscribe_failed', { reason: result.reason });
+                if (result.reason === 'permission-denied') showT('Notifications blocked — enable them in your browser settings');
+                else if (result.reason === 'unsupported')  showT('Push not supported on this browser');
+                else if (result.reason === 'no-vapid-key') showT('Push not configured yet — please contact support');
+                else if (result.reason.startsWith('permission-')) showT('Permission not granted — tap toggle again');
+                else showT('Couldn\'t enable push — try again');
+              }
+              return NOTIF_OPTIONS.map(opt => {
+                const time = s.notifTimes[opt.key];
+                const on = time !== undefined;
+                return (
+                  <div key={opt.key} style={{borderBottom:'0.5px solid var(--bd)', paddingBottom:12, marginBottom:12}}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                      <div style={{flex:1, minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:600,color:'var(--ink)'}}>{opt.icon} {opt.label}</div>
+                        <div style={{fontSize:11,color:'var(--mu)',marginTop:2}}>
+                          {on ? `Daily at ${prettyTime(time)}` : opt.desc}
+                        </div>
+                      </div>
+                      <div
+                        onClick={async () => {
+                          const nt = { ...s.notifTimes };
+                          const turningOff = on;
+                          if (turningOff) delete nt[opt.key];
+                          else nt[opt.key] = defaultTimeFor(opt.key);
+                          up({ notifTimes: nt, notifEnabled: Object.keys(nt).length > 0 });
+                          if (!turningOff) await syncPushSubscription(nt);
+                          else if (Object.keys(nt).length === 0) await syncPushSubscription(nt);
+                          else await syncPushSubscription(nt);
+                          if (!turningOff) logEvent('push_subscribed', { slot: opt.key });
+                        }}
+                        style={{width:44,height:24,borderRadius:12,cursor:'pointer',background:on?'var(--bee)':'var(--bd)',position:'relative',transition:'background .2s',flexShrink:0,marginLeft:12}}
+                      >
+                        <div style={{width:18,height:18,borderRadius:9,background:'#fff',position:'absolute',top:3,left:on?23:3,transition:'left .2s'}}/>
+                      </div>
+                    </div>
+                    {on && (
+                      <div style={{marginTop:10, display:'flex', alignItems:'center', gap:10, paddingLeft:2}}>
+                        <span style={{fontSize:11, color:'var(--mu)', fontWeight:600}}>NOTIFY ME AT</span>
+                        <input
+                          type="time"
+                          value={time}
+                          onChange={async (e) => {
+                            const newTime = e.target.value;
+                            if (!newTime) return;
+                            const nt = { ...s.notifTimes, [opt.key]: newTime };
+                            up({ notifTimes: nt, notifEnabled: true });
+                            await syncPushSubscription(nt, { silent: true });
+                            logEvent('push_time_changed', { slot: opt.key, time: newTime });
+                            showT(`Notification time updated`);
+                          }}
+                          style={{
+                            padding:'7px 10px',
+                            borderRadius:10,
+                            border:'1.5px solid var(--bd)',
+                            fontSize:14,
+                            fontWeight:600,
+                            color:'var(--ink)',
+                            fontFamily:'inherit',
+                            background:'var(--white)',
+                            outline:'none',
+                            cursor:'pointer',
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
-                  <div onClick={()=>{const nt={...s.notifTimes};if(on)delete nt[opt.key];else nt[opt.key]='08:00';up({notifTimes:nt,notifEnabled:Object.keys(nt).length>0});}}
-                    style={{width:44,height:24,borderRadius:12,cursor:'pointer',background:on?'var(--bee)':'var(--bd)',position:'relative',transition:'background .2s',flexShrink:0}}>
-                    <div style={{width:18,height:18,borderRadius:9,background:'#fff',position:'absolute',top:3,left:on?23:3,transition:'left .2s'}}/>
-                  </div>
+                );
+              });
+            })()}
+            <div style={{fontSize:11, color:'var(--mu)', marginTop:6, lineHeight:1.5}}>
+              We&apos;ll send a notification at your chosen time. Works even when the app is closed (after you allow notifications).
+            </div>
+            {/* Test push button — only enabled when at least one slot is on. Lets the
+                user verify the full path (subscription → server → device) works. */}
+            {Object.keys(s.notifTimes).length > 0 && (
+              <button
+                onClick={async ()=>{
+                  showT('Sending test notification…');
+                  const r = await sendTestPush();
+                  if (r.ok) {
+                    if (r.preview?.title) {
+                      // Show the actual title we sent so the user can see if
+                      // the personalisation worked (uses real fridge state)
+                      // or if it fell back to generic copy.
+                      showT(`Sent: "${r.preview.title}"`);
+                    } else {
+                      showT('Test sent — check your phone! 📱');
+                    }
+                    logEvent('push_test_sent', { preview: r.preview?.title });
+                  } else {
+                    if (r.reason === 'no-subscription') showT('Toggle on a notification first');
+                    else if (r.reason === 'server-404') showT('Subscription not found on server — toggle off and on again');
+                    else showT(`Test failed: ${r.reason}`);
+                  }
+                }}
+                style={{
+                  marginTop:14, width:'100%',
+                  padding:'12px 16px', borderRadius:14,
+                  border:'1.5px solid var(--bd)', background:'var(--white)',
+                  cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700,
+                  color:'var(--ink)', display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+                }}
+              >
+                <span style={{fontSize:16}}>🔔</span>
+                <span>Send test notification</span>
+              </button>
+            )}
+            {/* Diagnostics — helps debug why push isn't landing on a device.
+                Tap the button to see permission state, SW status, subscription
+                endpoint, iOS install state, etc. Shareable as text. */}
+            <button
+              onClick={async ()=>{
+                const d = await getPushDiagnostics();
+                setPushDiag(d);
+              }}
+              style={{
+                marginTop:8, width:'100%',
+                padding:'10px 14px', borderRadius:12,
+                border:'1px dashed var(--bd)', background:'transparent',
+                cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600,
+                color:'var(--mu)',
+              }}
+            >
+              🔍 Show push diagnostics
+            </button>
+            {pushDiag && (
+              <div style={{
+                marginTop:10, padding:'12px 14px', background:'var(--wa)',
+                borderRadius:12, fontSize:11.5, lineHeight:1.7,
+                color:'var(--ink)', fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace',
+              }}>
+                <div style={{display:'flex',justifyContent:'space-between'}}>
+                  <span>Browser supports SW:</span>
+                  <span style={{fontWeight:700, color: pushDiag.supportsServiceWorker ? 'var(--sage)' : 'var(--red)'}}>
+                    {pushDiag.supportsServiceWorker ? 'yes' : 'NO'}
+                  </span>
                 </div>
-              );
-            })}
+                <div style={{display:'flex',justifyContent:'space-between'}}>
+                  <span>Browser supports Push:</span>
+                  <span style={{fontWeight:700, color: pushDiag.supportsPushManager ? 'var(--sage)' : 'var(--red)'}}>
+                    {pushDiag.supportsPushManager ? 'yes' : 'NO'}
+                  </span>
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between'}}>
+                  <span>Service worker active:</span>
+                  <span style={{fontWeight:700, color: pushDiag.serviceWorkerActive ? 'var(--sage)' : 'var(--red)'}}>
+                    {pushDiag.serviceWorkerActive ? 'yes' : 'NO'}
+                  </span>
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between'}}>
+                  <span>Permission:</span>
+                  <span style={{fontWeight:700, color: pushDiag.notificationPermission === 'granted' ? 'var(--sage)' : 'var(--red)'}}>
+                    {pushDiag.notificationPermission}
+                  </span>
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between'}}>
+                  <span>Push subscription:</span>
+                  <span style={{fontWeight:700, color: pushDiag.hasSubscription ? 'var(--sage)' : 'var(--red)'}}>
+                    {pushDiag.hasSubscription ? 'yes' : 'NO'}
+                  </span>
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between'}}>
+                  <span>VAPID configured:</span>
+                  <span style={{fontWeight:700, color: pushDiag.vapidConfigured ? 'var(--sage)' : 'var(--red)'}}>
+                    {pushDiag.vapidConfigured ? 'yes' : 'NO'}
+                  </span>
+                </div>
+                {pushDiag.isIOS && (
+                  <div style={{display:'flex',justifyContent:'space-between'}}>
+                    <span>iOS PWA installed:</span>
+                    <span style={{fontWeight:700, color: pushDiag.isPWAInstalled ? 'var(--sage)' : 'var(--red)'}}>
+                      {pushDiag.isPWAInstalled ? 'yes' : 'NO (push won\'t work)'}
+                    </span>
+                  </div>
+                )}
+                {pushDiag.endpoint && (
+                  <div style={{marginTop:8, paddingTop:8, borderTop:'0.5px solid var(--bd)', wordBreak:'break-all', fontSize:10, color:'var(--mu)'}}>
+                    <strong>Endpoint:</strong> {pushDiag.endpoint.slice(0, 80)}…
+                  </div>
+                )}
+                <div style={{marginTop:8, paddingTop:8, borderTop:'0.5px solid var(--bd)', fontSize:10, color:'var(--mu)'}}>
+                  {pushDiag.isIOS && !pushDiag.isPWAInstalled && (
+                    <div style={{color:'var(--red)', fontWeight:700}}>
+                      ⚠️ iOS Safari needs the app installed to home screen first. Tap Share → Add to Home Screen, then re-open from home screen.
+                    </div>
+                  )}
+                  {!pushDiag.supportsPushManager && !pushDiag.isIOS && (
+                    <div style={{color:'var(--red)', fontWeight:700}}>
+                      ⚠️ This browser doesn&apos;t support Web Push. Try Chrome on Android.
+                    </div>
+                  )}
+                  {pushDiag.supportsPushManager && pushDiag.notificationPermission !== 'granted' && (
+                    <div style={{color:'var(--red)', fontWeight:700}}>
+                      ⚠️ Permission isn&apos;t granted. Toggle a notification on and tap Allow.
+                    </div>
+                  )}
+                  {pushDiag.notificationPermission === 'granted' && !pushDiag.serviceWorkerActive && (
+                    <div style={{color:'var(--red)', fontWeight:700}}>
+                      ⚠️ Service worker not active yet. Hard-refresh the page once and try again.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </ProfileSection>
 
           <ProfileSection isOpen={openProfileSections.share} onToggle={()=>toggleSection('share')} title="📤 Share & Invite">
@@ -3318,7 +4654,48 @@ export default function FridgeBee() {
             </button>
           </ProfileSection>
 
+          <ProfileSection isOpen={openProfileSections.help} onToggle={()=>toggleSection('help')} title="💬 Help & Feedback" extra="Send feedback, report a bug, read our policies">
+            <a
+              href={`mailto:hello@fridgebee.app?subject=${encodeURIComponent('FridgeBee feedback')}&body=${encodeURIComponent(`Tell us what you think:\n\n\n— — — — —\nApp version: ${authUser ? 'signed-in' : 'guest'} · ${typeof navigator !== 'undefined' ? navigator.userAgent : ''}`)}`}
+              onClick={() => logEvent('feedback_click', { kind: 'email' })}
+              style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'14px 16px',borderRadius:14,border:'1.5px solid var(--bd)',background:'var(--white)',cursor:'pointer',fontFamily:'inherit',textAlign:'left',textDecoration:'none',color:'inherit',marginBottom:8}}
+            >
+              <div style={{width:40,height:40,borderRadius:10,background:'#FEF3E2',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>✉️</div>
+              <div>
+                <div style={{fontWeight:700,fontSize:14,color:'var(--ink)'}}>Send feedback or report a bug</div>
+                <div style={{fontSize:12,color:'var(--mu)',marginTop:1}}>Email hello@fridgebee.app — we read every one</div>
+              </div>
+            </a>
+            <a
+              href="/privacy" target="_blank" rel="noopener noreferrer"
+              onClick={() => logEvent('feedback_click', { kind: 'privacy' })}
+              style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'14px 16px',borderRadius:14,border:'1.5px solid var(--bd)',background:'var(--white)',cursor:'pointer',fontFamily:'inherit',textAlign:'left',textDecoration:'none',color:'inherit',marginBottom:8}}
+            >
+              <div style={{width:40,height:40,borderRadius:10,background:'var(--wa)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>🔒</div>
+              <div>
+                <div style={{fontWeight:700,fontSize:14,color:'var(--ink)'}}>Privacy policy</div>
+                <div style={{fontSize:12,color:'var(--mu)',marginTop:1}}>What we store, what we don&apos;t, and how to delete it</div>
+              </div>
+            </a>
+            <div style={{fontSize:11,color:'var(--mu)',textAlign:'center',marginTop:6,lineHeight:1.5}}>
+              fridgeBee · v2 beta · Made with 🐝 by the team
+            </div>
+          </ProfileSection>
+
           <ProfileSection isOpen={openProfileSections.settings} onToggle={()=>toggleSection('settings')} title="⚙️ Reset & Sign out">
+            <button
+              onClick={()=>{
+                if(!confirm('Reset insights counters (used / wasted / streak)? Your fridge contents and preferences stay.')) return;
+                up({ itemsUsed: 0, itemsWasted: 0, wastedByCategory: {}, wasteStreak: 0 });
+                showT('Insights reset ✓');
+              }}
+              style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'14px 16px',borderRadius:14,border:'1.5px solid var(--bd)',background:'#fff',cursor:'pointer',fontFamily:'inherit',textAlign:'left',marginBottom:8}}>
+              <span style={{fontSize:20}}>📊</span>
+              <div>
+                <div style={{fontWeight:700,fontSize:14,color:'var(--ink)'}}>Reset insights counters</div>
+                <div style={{fontSize:12,color:'var(--mu)',marginTop:1}}>Clears used / wasted numbers without touching your fridge</div>
+              </div>
+            </button>
             {authUser && (
               <button
                 onClick={signOutUser}
@@ -3461,6 +4838,7 @@ export default function FridgeBee() {
               </button>
               <button onClick={() => {
                 const cat = editItem.category || 'Other';
+                logEvent('item_wasted', { name: editItem.name, qty: editItem.qty, unit: editItem.unit, category: cat, expiry: editItem.expiry, addedBy: editItem.addedBy });
                 up({
                   items: s.items.filter(i => i.id !== editItem.id),
                   itemsWasted: s.itemsWasted + 1,
@@ -3506,12 +4884,32 @@ export default function FridgeBee() {
     function pick(c: string) {
       setCookChoice(c);
       if (c === 'all') {
+        // Used everything — remove the item.
         markUsed(cookDoneItem!.id);
       } else if (c === 'little') {
-        up({ items: s.items.map(i => i.id === cookDoneItem!.id ? {...i, expiry:daysFromNow(1), qty:Math.max(1,Math.floor(i.qty*0.3))} : i), itemsUsed:s.itemsUsed+1, wasteStreak:s.wasteStreak+1 });
+        // Less than a handful left — drop qty to ~20% and shorten expiry.
+        up({
+          items: s.items.map(i => i.id === cookDoneItem!.id
+            ? { ...i, expiry: daysFromNow(1), qty: Math.max(1, Math.round(i.qty * 0.2)) }
+            : i),
+          itemsUsed: s.itemsUsed + 1,
+          wasteStreak: s.wasteStreak + 1,
+        });
       } else {
-        up({ items: s.items.map(i => i.id === cookDoneItem!.id ? {...i, expiry:daysFromNow(3)} : i), itemsUsed:s.itemsUsed+1, wasteStreak:s.wasteStreak+1 });
+        // Plenty left — drop qty to ~60% and keep a comfortable expiry buffer.
+        up({
+          items: s.items.map(i => i.id === cookDoneItem!.id
+            ? { ...i, expiry: daysFromNow(3), qty: Math.max(1, Math.round(i.qty * 0.6)) }
+            : i),
+          itemsUsed: s.itemsUsed + 1,
+          wasteStreak: s.wasteStreak + 1,
+        });
       }
+      // Force meals to re-fetch — qty change alone wouldn't trip the
+      // useEffect deps (which watch item count + name signature).
+      setMeals([]);
+      setPlannedDays([]);
+      setMealsRefreshKey(prev => prev + 1);
       setCookConfirmed(true);
       setTimeout(() => {
         setCookDoneItem(null); setCookConfirmed(false); setCookChoice('');
@@ -3647,17 +5045,21 @@ export default function FridgeBee() {
     }
 
     function confirmAll() {
-      const batch = parsedEditable.filter(it => it.name).map(it => ({
-        name: it.name!,
-        emoji: it.emoji || '📦',
-        shelf: (it.shelf || 'fridge') as Shelf,
-        category: it.category || 'Other',
-        qty: it.qty || 1,
-        unit: it.unit || 'pcs',
-        expiry: it.expiry || daysFromNow(7),
-        cost: it.cost,
-        addedBy: (it.addedBy || 'manual') as 'manual' | 'voice' | 'scan',
-      }));
+      const batch = parsedEditable.filter(it => it.name).map(it => {
+        const name = it.name!;
+        const category = it.category || 'Other';
+        return {
+          name,
+          emoji: it.emoji || '📦',
+          shelf: (it.shelf || 'fridge') as Shelf,
+          category,
+          qty: it.qty || 1,
+          unit: it.unit || 'pcs',
+          expiry: it.expiry || daysFromNow(expiryDaysForName(name, category)),
+          cost: it.cost,
+          addedBy: (it.addedBy || 'manual') as 'manual' | 'voice' | 'scan',
+        };
+      });
       addItems(batch);
       // Land the user on the fridge tab where the items appear, with filters cleared.
       const dominantShelf = (() => {
@@ -4013,6 +5415,14 @@ export default function FridgeBee() {
                 onClick={()=>{
                   if(!m.name.trim())return;
                   const saved = isNew?{...m,id:uid()}:m;
+                  logEvent(isNew ? 'member_added' : 'member_updated', {
+                    name: saved.name,
+                    isKid: !!saved.isKid,
+                    age: saved.age || null,
+                    dietaryFilters: saved.dietaryFilters || [],
+                    allergies: saved.allergies || [],
+                    dislikes: saved.dislikes || [],
+                  });
                   up({members:isNew?[...s.members,saved]:s.members.map(mb=>mb.id===m.id?saved:mb)});
                   setShowMember(false); setEditMember(null);
                   showT(isNew?`Added ${m.name} ✓`:`Updated ${m.name} ✓`);
