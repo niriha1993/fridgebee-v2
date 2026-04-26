@@ -45,7 +45,15 @@ function buildStableSystemPrompt() {
 STRICT RULES:
 - Every dish must be a real, recognised recipe — no invented combinations.
 - The dish MUST match the requested meal type as defined in the meal-slot guide below.
-- INGREDIENT GROUNDING: The PRIMARY (anchor) ingredient of every recipe MUST be present in the user's fridge contents. You may add common pantry staples that are not in the fridge (salt, oil, ghee, basic spices, garlic, onion, water, sugar) but the dish must clearly use a fridge item as its hero. NEVER suggest a dish whose star ingredient (chicken, fish, paneer, tofu, beans, rice, oats, etc.) is missing from the fridge.
+- INGREDIENT GROUNDING (HARD RULE — enforced ruthlessly):
+  * Every recipe's PRIMARY ingredient MUST literally appear in the fridge list provided. Do NOT suggest:
+    - Tofu recipes if the fridge has no tofu
+    - Chicken / fish / paneer / mango recipes when those aren't in the fridge
+    - Beans / lentils / dal recipes if the fridge has none
+    - Rice-based dishes if no rice / pasta if no pasta / noodles if no noodles
+  * Pantry staples you MAY assume are available even if not listed: salt, oil, basic spices (cumin, turmeric, chilli, pepper), water, sugar.
+  * Onion, tomato, garlic, ginger are common but NOT staples — only use them if listed.
+  * If the fridge is sparse and no real recipe fits, return FEWER than the requested count (or even an empty array) rather than fabricate recipes the user can't make.
 - DIETARY RULES (non-negotiable, enforce strictly):
   * If "Vegetarian" is in dietary preferences → NO chicken, fish, seafood, meat. Eggs are allowed only if no eggs allergy.
   * If "Vegan" is in dietary preferences → NO animal products at all (no dairy, no eggs, no honey, no fish, no meat).

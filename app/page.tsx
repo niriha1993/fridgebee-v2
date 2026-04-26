@@ -794,12 +794,11 @@ function buildFallbackMealsForDay(
   } else if (fridgeWords.size === 0) {
     pickFrom = scored;
   } else {
-    // Fridge has items but no recipe anchor matches. Show recipes that at
-    // least share one ingredient (overlap-only), else nothing.
+    // Fridge has items but no recipe anchor matches. Show only recipes that
+    // share at least one ingredient with the fridge. If none, return empty
+    // rather than recommending recipes whose ingredients the user doesn't
+    // have (which is how Tofu Stir-fry was leaking in for users with no tofu).
     pickFrom = scored.filter(s => s.score > 0);
-    // Last resort — if even overlap is zero, show top 3 from the slot pool
-    // so the user sees something rather than a blank screen.
-    if (pickFrom.length === 0) pickFrom = scored.slice(0, 3);
   }
 
   // Sort: highest score first, stable hash tiebreak so output is deterministic per slot/day.
@@ -3128,6 +3127,10 @@ export default function FridgeBee() {
 
             {!authUser ? (
               <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                {/* Two paths only — Google one-tap, or email magic link.
+                    Magic link auto-creates the account on first click; no
+                    password, no signup vs sign-in toggle. Both flows save
+                    everything to Supabase. */}
                 <button
                   onClick={continueWithGoogle}
                   disabled={authBusy}
@@ -3137,59 +3140,33 @@ export default function FridgeBee() {
                   Continue with Google
                 </button>
 
-                <div style={{display:'flex',gap:8}}>
-                  {(['signup','signin'] as const).map(mode => (
-                    <button
-                      key={mode}
-                      onClick={()=>setAuthMode(mode)}
-                      style={{flex:1,padding:'10px 12px',borderRadius:12,border:'1.5px solid',borderColor:authMode===mode?'var(--ink)':'var(--bd)',background:authMode===mode?'var(--ink)':'#fff',color:authMode===mode?'#fff':'var(--ink)',fontWeight:700,fontSize:13,cursor:'pointer',fontFamily:'inherit'}}
-                    >
-                      {mode === 'signup' ? 'Create account' : 'Sign in'}
-                    </button>
-                  ))}
-                </div>
-
-                <div style={{display:'flex',gap:8}}>
-                  {(['password','magic'] as const).map(mode => (
-                    <button
-                      key={mode}
-                      onClick={()=>setEmailMode(mode)}
-                      style={{flex:1,padding:'9px 12px',borderRadius:12,border:'1.5px solid',borderColor:emailMode===mode?'var(--bee)':'var(--bd)',background:emailMode===mode?'var(--beel)':'#fff',color:emailMode===mode?'var(--beed)':'var(--ink)',fontWeight:700,fontSize:13,cursor:'pointer',fontFamily:'inherit'}}
-                    >
-                      {mode === 'password' ? 'Email + password' : 'Magic link'}
-                    </button>
-                  ))}
+                <div style={{display:'flex',alignItems:'center',gap:10,margin:'4px 0'}}>
+                  <div style={{flex:1,height:1,background:'var(--bd)'}}/>
+                  <span style={{fontSize:11,color:'var(--mu)',fontWeight:700,letterSpacing:'.08em'}}>OR</span>
+                  <div style={{flex:1,height:1,background:'var(--bd)'}}/>
                 </div>
 
                 <input
                   type="email"
                   value={authEmail}
                   onChange={e=>setAuthEmail(e.target.value)}
-                  placeholder="Email address"
+                  placeholder="your@email.com"
                   autoCapitalize="none"
                   autoCorrect="off"
                   style={{width:'100%',padding:'12px',borderRadius:12,border:'1.5px solid var(--bd)',fontSize:15,fontFamily:'inherit',outline:'none',background:'#fff'}}
                 />
 
-                {emailMode === 'password' && (
-                  <input
-                    type="password"
-                    value={authPassword}
-                    onChange={e=>setAuthPassword(e.target.value)}
-                    placeholder={authMode === 'signup' ? 'Create a password' : 'Password'}
-                    style={{width:'100%',padding:'12px',borderRadius:12,border:'1.5px solid var(--bd)',fontSize:15,fontFamily:'inherit',outline:'none',background:'#fff'}}
-                  />
-                )}
-
-                <button className="btn-bee" onClick={submitEmailAuth} disabled={authBusy} style={{opacity:authBusy ? 0.7 : 1}}>
-                  {authBusy
-                    ? 'Working…'
-                    : emailMode === 'magic'
-                      ? 'Email me a magic link'
-                      : authMode === 'signup'
-                        ? 'Create account & save my fridge'
-                        : 'Sign in & load my fridge'}
+                <button
+                  className="btn-bee"
+                  onClick={() => { setEmailMode('magic'); setAuthMode('signup'); submitEmailAuth(); }}
+                  disabled={authBusy}
+                  style={{opacity:authBusy ? 0.7 : 1}}
+                >
+                  {authBusy ? 'Sending…' : '✉️ Email me a sign-in link'}
                 </button>
+                <div style={{fontSize:11,color:'var(--mu)',textAlign:'center',lineHeight:1.4}}>
+                  No password needed. We&apos;ll email you a one-tap sign-in link.
+                </div>
               </div>
             ) : (
               <div style={{display:'flex',flexDirection:'column',gap:10}}>
