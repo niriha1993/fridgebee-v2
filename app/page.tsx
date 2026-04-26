@@ -1251,6 +1251,11 @@ export default function FridgeBee() {
   const [cookConfirmed, setCookConfirmed] = useState(false);
   const [cookChoice, setCookChoice] = useState('');
   const [recipeScreen, setRecipeScreen] = useState<Meal|null>(null);
+  // Deep-link recipe name parsed from URL on mount (e.g. push notification
+  // opens /?tab=meals&recipe=Suji+Upma). Consumed by the URL-deep-link
+  // useEffect, which fetches the recipe and opens the recipe screen.
+  const [pendingRecipeName, setPendingRecipeName] = useState<string|null>(null);
+  const [pendingRecipeLoading, setPendingRecipeLoading] = useState(false);
   const [prefsBannerVisible, setPrefsBannerVisible] = useState(true);
   const [meals, setMeals] = useState<Meal[]>([]);
   // Push diagnostics — populated by the "Show diagnostics" button so we can
@@ -1351,6 +1356,97 @@ export default function FridgeBee() {
     } catch {}
     setLocalReady(true);
   }, []);
+
+  // ── DEEP-LINK PARSER (runs once on mount) ────────────────────────────────
+  // Push notifications open URLs like:
+  //   /?tab=meals&recipe=Suji+Upma   → meals tab, auto-open Suji Upma recipe
+  //   /?tab=restock                  → restock tab
+  // We read the params, set the tab, stash the recipe name, then clean the URL
+  // so a manual page refresh doesn't re-trigger the deep-link.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const tabParam = params.get('tab');
+      const recipeParam = params.get('recipe');
+      const KNOWN_TABS: Tab[] = ['fridge','meals','restock','insights','profile'];
+      if (tabParam && (KNOWN_TABS as string[]).includes(tabParam)) {
+        setTab(tabParam as Tab);
+      }
+      if (recipeParam) {
+        setPendingRecipeName(recipeParam);
+        // If the URL has a recipe but no tab, force meals so the user lands
+        // on the right surface even before the recipe fetch returns.
+        if (!tabParam) setTab('meals');
+        logEvent('push_deeplink_opened', { recipe: recipeParam, tab: tabParam || 'meals' });
+      }
+      // Clean the URL — strip query params so a refresh doesn't re-fire the
+      // deep link or re-trigger the recipe fetch.
+      if (tabParam || recipeParam) {
+        const cleanUrl = window.location.pathname + window.location.hash;
+        window.history.replaceState({}, '', cleanUrl);
+      }
+    } catch {}
+    // Run once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── DEEP-LINK RECIPE FETCH ──────────────────────────────────────────────
+  // When `pendingRecipeName` is set (from the URL deep-link), fetch that
+  // exact recipe via /api/meals?recipeName=… and open the recipe screen.
+  // We wait for `localReady` so we have the user's fridge + members loaded.
+  useEffect(() => {
+    if (!pendingRecipeName || !localReady) return;
+    if (recipeScreen) return; // already open
+    let cancelled = false;
+    (async () => {
+      setPendingRecipeLoading(true);
+      try {
+        const mealMembers = [
+          ...(s.name || s.dietaryFilters.length || s.allergies.length ? [{
+            name: s.name || 'You',
+            isKid: false,
+            dietaryFilters: s.dietaryFilters,
+            allergies: s.allergies,
+            dislikes: [] as string[],
+          }] : []),
+          ...s.members.map(m => ({
+            name: m.name, isKid: m.isKid, age: m.age,
+            dietaryFilters: m.dietaryFilters, allergies: m.allergies, dislikes: m.dislikes,
+          })),
+        ];
+        const r = await fetch('/api/meals', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: s.items,
+            cuisines: s.cuisines,
+            members: mealMembers,
+            country: s.country,
+            recipeName: pendingRecipeName,
+          }),
+        });
+        if (cancelled) return;
+        const data = r?.ok ? await r.json() : { meals: [] };
+        const meal = (data.meals || [])[0];
+        if (meal) {
+          setRecipeScreen(meal as Meal);
+          logEvent('push_deeplink_recipe_opened', { recipe: pendingRecipeName });
+        } else {
+          showT(`Couldn't load "${pendingRecipeName}" — refresh meals to see fresh ideas.`);
+        }
+      } catch {
+        if (!cancelled) showT('Recipe fetch failed — open meals manually.');
+      } finally {
+        if (!cancelled) {
+          setPendingRecipeName(null);
+          setPendingRecipeLoading(false);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingRecipeName, localReady]);
 
   // Save
   useEffect(() => {
@@ -3436,7 +3532,16 @@ export default function FridgeBee() {
         )}
 
         <div style={{ padding:'16px' }}>
-          {mealsLoading && s.items.length > 0 && (
+          {pendingRecipeLoading && (
+            <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', marginBottom:12, background:'#FEF3E2', border:'1.5px solid #C07A20', borderRadius:14, fontSize:13, color:'#7A4F00', fontWeight:600 }}>
+              <div style={{ animation:'bee-bob 1.2s ease-in-out infinite', display:'inline-block', flexShrink:0 }}><BeeSVG size={22}/></div>
+              <div style={{ lineHeight:1.4 }}>
+                <div style={{ fontWeight:800 }}>Opening recipe from your notification…</div>
+                <div style={{ fontSize:11, color:'#A26A00', fontWeight:500, marginTop:2 }}>Loading the exact dish we suggested.</div>
+              </div>
+            </div>
+          )}
+          {mealsLoading && s.items.length > 0 && !pendingRecipeLoading && (
             <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', marginBottom:12, background:'#FFF9EF', border:'1.5px solid #F5C44E', borderRadius:14, fontSize:13, color:'#7A4F00', fontWeight:600 }}>
               <div style={{ animation:'bee-bob 1.2s ease-in-out infinite', display:'inline-block', flexShrink:0 }}><BeeSVG size={22}/></div>
               <div style={{ lineHeight:1.4 }}>
@@ -4503,41 +4608,60 @@ export default function FridgeBee() {
             <div style={{fontSize:11, color:'var(--mu)', marginTop:6, lineHeight:1.5}}>
               We&apos;ll send a notification at your chosen time. Works even when the app is closed (after you allow notifications).
             </div>
-            {/* Test push button — only enabled when at least one slot is on. Lets the
-                user verify the full path (subscription → server → device) works. */}
-            {Object.keys(s.notifTimes).length > 0 && (
-              <button
-                onClick={async ()=>{
-                  showT('Sending test notification…');
-                  const r = await sendTestPush();
-                  if (r.ok) {
-                    if (r.preview?.title) {
-                      // Show the actual title we sent so the user can see if
-                      // the personalisation worked (uses real fridge state)
-                      // or if it fell back to generic copy.
-                      showT(`Sent: "${r.preview.title}"`);
-                    } else {
-                      showT('Test sent — check your phone! 📱');
-                    }
-                    logEvent('push_test_sent', { preview: r.preview?.title });
-                  } else {
-                    if (r.reason === 'no-subscription') showT('Toggle on a notification first');
-                    else if (r.reason === 'server-404') showT('Subscription not found on server — toggle off and on again');
-                    else showT(`Test failed: ${r.reason}`);
-                  }
-                }}
-                style={{
-                  marginTop:14, width:'100%',
-                  padding:'12px 16px', borderRadius:14,
-                  border:'1.5px solid var(--bd)', background:'var(--white)',
-                  cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700,
-                  color:'var(--ink)', display:'flex', alignItems:'center', justifyContent:'center', gap:8,
-                }}
-              >
-                <span style={{fontSize:16}}>🔔</span>
-                <span>Send test notification</span>
-              </button>
-            )}
+            {/* Per-slot test buttons — one button per enabled slot, so when the
+                user wants to verify the *restock* push specifically they don't
+                accidentally get the morning preview. Calls sendTestPush(slot)
+                which forces the server to pick that exact slot. */}
+            {Object.keys(s.notifTimes).length > 0 && (() => {
+              const SLOT_META: Record<string, { emoji: string; label: string }> = {
+                morning: { emoji: '☀️', label: 'breakfast' },
+                expiry:  { emoji: '⚠️', label: 'expiry' },
+                meal:    { emoji: '🍳', label: 'dinner' },
+                restock: { emoji: '🛒', label: 'restock' },
+              };
+              const enabledSlots = Object.keys(s.notifTimes).filter(k => SLOT_META[k]);
+              const testHandler = (slotKey?: string) => async () => {
+                const niceLabel = slotKey ? SLOT_META[slotKey]?.label || slotKey : 'notification';
+                showT(`Sending ${niceLabel} test…`);
+                const r = await sendTestPush(slotKey);
+                if (r.ok) {
+                  if (r.preview?.title) showT(`Sent: "${r.preview.title}"`);
+                  else showT('Test sent — check your phone! 📱');
+                  logEvent('push_test_sent', { slot: slotKey || null, preview: r.preview?.title });
+                } else {
+                  if (r.reason === 'no-subscription') showT('Toggle on a notification first');
+                  else if (r.reason === 'server-404') showT('Subscription not found — toggle off and on again');
+                  else showT(`Test failed: ${r.reason}`);
+                }
+              };
+              return (
+                <div style={{ marginTop:14 }}>
+                  <div style={{ fontSize:11, color:'var(--mu)', fontWeight:700, letterSpacing:'.6px', marginBottom:8 }}>
+                    SEND TEST PUSH FOR
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns: enabledSlots.length >= 3 ? '1fr 1fr' : `repeat(${enabledSlots.length}, 1fr)`, gap:8 }}>
+                    {enabledSlots.map(slotKey => {
+                      const meta = SLOT_META[slotKey];
+                      return (
+                        <button
+                          key={slotKey}
+                          onClick={testHandler(slotKey)}
+                          style={{
+                            padding:'11px 12px', borderRadius:12,
+                            border:'1.5px solid var(--bd)', background:'var(--white)',
+                            cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700,
+                            color:'var(--ink)', display:'flex', alignItems:'center', justifyContent:'center', gap:6,
+                          }}
+                        >
+                          <span style={{fontSize:14}}>{meta.emoji}</span>
+                          <span>Test {meta.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
             {/* Diagnostics — helps debug why push isn't landing on a device.
                 Tap the button to see permission state, SW status, subscription
                 endpoint, iOS install state, etc. Shareable as text. */}

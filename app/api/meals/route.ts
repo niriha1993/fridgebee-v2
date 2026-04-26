@@ -415,7 +415,7 @@ async function generateWithAnthropic(systemContent: string, userPrompt: string):
 
 export async function POST(req: NextRequest) {
   try {
-    const { items, cuisines, members, mealType, excludeMeals, count, country } = await req.json();
+    const { items, cuisines, members, mealType, excludeMeals, count, country, recipeName } = await req.json();
     const slot = (typeof mealType === 'string' && PERIOD_TIME[mealType.toLowerCase()]) ? mealType.toLowerCase() : 'dinner';
     const wantedCount = typeof count === 'number' && count > 0 ? Math.min(count, 6) : 3;
 
@@ -425,6 +425,66 @@ export async function POST(req: NextRequest) {
 
     if (!OPENAI_KEY && !ANTHROPIC_KEY) {
       return NextResponse.json({ meals: [], error: 'No AI provider configured' });
+    }
+
+    // ── DEEP-LINK FAST PATH ────────────────────────────────────────────────
+    // When a push notification is tapped, we open `/?tab=meals&recipe=<name>`
+    // and the page hits this route with `recipeName` set. Skip the curated
+    // dish list / multi-recipe ranking entirely — just generate exactly that
+    // one recipe in the V2Meal shape so the recipeScreen can render it cold.
+    if (typeof recipeName === 'string' && recipeName.trim()) {
+      const member = describeMembers(members);
+      const fridge = describeFridge(items);
+      const singlePrompt = `Generate the recipe "${recipeName.trim()}" as one entry in JSON.
+
+DIET / FAMILY: ${member.dietCtx}
+FRIDGE (use as much as possible): ${fridge.fresh || 'sparse'}
+EXPIRING (use first if relevant): ${fridge.expiring || 'none'}
+
+ALWAYS available (do NOT require these in the fridge): water, salt, pepper, oil, basic spices (cumin, turmeric, chilli powder, garam masala, mustard seeds), onion, garlic, ginger, sugar, sooji, atta, maida, basmati rice, dal, oats, vermicelli, sabudana, poha, pasta, bread, milk, butter, eggs.
+
+Return JSON: { "meals": [ <one meal object> ] } where the meal has shape:
+{
+  "name": "${recipeName.trim()}",
+  "emoji": "single emoji",
+  "description": "one-sentence description",
+  "cookTime": number_minutes,
+  "kcal": number,
+  "protein": number_grams,
+  "mealType": "${slot}",
+  "usesExpiring": true_if_recipe_uses_an_expiring_item,
+  "safeFor": ${member.kidName ? `["${member.kidName}"]_if_kid_safe_else_empty_array` : '[]'},
+  "ingredients": ["Name qty unit", ...],
+  "steps": ["short step", "short step", ...],
+  "tags": ["tag1", "tag2"]
+}
+Steps must be max 6, short and practical. ${member.hasKid ? 'Mild spice and kid-safe.' : ''}`;
+      const sysSingle = 'You are a precise recipe generator. Output a single recipe matching the requested name exactly.';
+      try {
+        let single: V2Meal[] = [];
+        if (OPENAI_KEY) single = await generateWithOpenAI(sysSingle, singlePrompt);
+        if (!single.length && ANTHROPIC_KEY) single = await generateWithAnthropic(sysSingle, singlePrompt);
+        if (single.length) {
+          // Force the name to match the requested one — guarantees the page
+          // can find it after fetch even if the AI rephrased slightly.
+          single[0].name = recipeName.trim();
+          return NextResponse.json({ meals: [single[0]] });
+        }
+      } catch { /* fall through to standard path */ }
+      // AI failed — return a fallback shaped entry so the screen still opens.
+      const safeFor = member.kidName ? [member.kidName] : [];
+      const fallback: V2Meal = {
+        name: recipeName.trim(),
+        emoji: '🍳',
+        description: `${recipeName.trim()} — open FridgeBee to refresh and see full steps.`,
+        cookTime: 25, kcal: 350, protein: 12,
+        mealType: slot, usesExpiring: false,
+        safeFor,
+        ingredients: items.slice(0, 5).map((i: Item) => `${i.name} ${i.qty}${i.unit}`),
+        steps: ['Prep your fridge ingredients.', 'Cook gently with oil and seasoning.', 'Taste, adjust, and serve warm.'],
+        tags: ['quick', slot],
+      };
+      return NextResponse.json({ meals: [fallback] });
     }
 
     // Resolve cuisine choice → curated dish list. Each onboarding pill

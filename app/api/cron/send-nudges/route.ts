@@ -198,6 +198,34 @@ function hhmmToMin(s: string): number | null {
 //   - Items expiring soon → expiry-led message
 //   - Items sitting unused for 3+ days → "don't forget your X"
 //   - Cooking history → tone (active cook / first-timer)
+// Build the meals-tab URL with an optional `recipe` deep-link param. When the
+// notification carries a specific recipe, tapping it opens the recipeScreen
+// directly (not just the meals tab) — matching what the title/body promised.
+function mealsUrl(recipe?: string | null): string {
+  if (!recipe) return '/?tab=meals';
+  return `/?tab=meals&recipe=${encodeURIComponent(recipe)}`;
+}
+
+// Strip generic qualifier suffixes from item names so the body reads cleanly.
+// Fridge UI lets users type things like "Onions India" / "Bell Pepper Red" —
+// the name is useful for shopping but reads as garbage in a push body.
+const QUALIFIER_TAIL_WORDS = new Set([
+  'india','indian','uk','us','china','italy','italian','thai','korean','japanese',
+  'red','green','yellow','white','black','purple','orange',
+  'organic','fresh','premium','frozen','pack','packet','tin','can',
+  'small','medium','large','xl','jumbo','mini',
+  'sweet','sour','spicy','mild',
+]);
+function cleanItemName(raw: string | undefined | null): string {
+  if (!raw) return '';
+  const lc = raw.toLowerCase().trim();
+  const parts = lc.split(/\s+/);
+  while (parts.length > 1 && QUALIFIER_TAIL_WORDS.has(parts[parts.length - 1])) {
+    parts.pop();
+  }
+  return parts.join(' ');
+}
+
 function buildNudge(state: AppStateRow['state'], slot: string, dateSeed: string): { title: string; body: string; url: string } | null {
   const items = Array.isArray(state.items) ? state.items : [];
   const members = Array.isArray(state.members) ? state.members : [];
@@ -260,8 +288,8 @@ function buildNudge(state: AppStateRow['state'], slot: string, dateSeed: string)
             `Breakfast for ${kidName}? 🍳`,
             `${kidName}'s breakfast 🌅`,
           ], dateSeed),
-          body: `Make ${breakfastRecipe} this morning — uses your ${breakfastHero.name.toLowerCase()} and ${kidName} will love it.`,
-          url: '/?tab=meals',
+          body: `Make ${breakfastRecipe} this morning — uses your ${cleanItemName(breakfastHero.name)} and ${kidName} will love it.`,
+          url: mealsUrl(breakfastRecipe),
         };
       }
       if (isCouple) {
@@ -270,8 +298,8 @@ function buildNudge(state: AppStateRow['state'], slot: string, dateSeed: string)
             `Breakfast idea ☀️`,
             `Good morning${greeting} 🌅`,
           ], dateSeed),
-          body: `Try ${breakfastRecipe} together this morning — uses your ${breakfastHero.name.toLowerCase()}.`,
-          url: '/?tab=meals',
+          body: `Try ${breakfastRecipe} together this morning — uses your ${cleanItemName(breakfastHero.name)}.`,
+          url: mealsUrl(breakfastRecipe),
         };
       }
       return {
@@ -279,34 +307,37 @@ function buildNudge(state: AppStateRow['state'], slot: string, dateSeed: string)
           `Good morning${greeting} ☀️`,
           `Breakfast: ${breakfastRecipe} 🍳`,
         ], dateSeed),
-        body: `Make ${breakfastRecipe} — uses your ${breakfastHero.name.toLowerCase()}. Tap to start cooking.`,
-        url: '/?tab=meals',
+        body: `Make ${breakfastRecipe} — uses your ${cleanItemName(breakfastHero.name)}. Tap to start cooking.`,
+        url: mealsUrl(breakfastRecipe),
       };
     }
 
     // Step 2 — no breakfast-suitable items. Fall back to expiry-led copy.
     if (expiringSoon.length > 0) {
-      const head = expiringSoon[0].it.name;
+      const head = cleanItemName(expiringSoon[0].it.name);
       const word = expiringSoon[0].days <= 0 ? 'today' : 'tomorrow';
+      const fallbackRecipe = suggestRecipe(expiringSoon[0].it.name);
       return {
         title: `${head} expires ${word} 🌅`,
         body: isFamily
           ? `Cook with ${head} today — ${kidName} can have it for lunch or dinner.`
           : `Plan a meal around ${head} today before it goes bad.`,
-        url: '/?tab=meals',
+        url: mealsUrl(fallbackRecipe),
       };
     }
 
     // Step 3 — items sitting unused.
     if (sittingUnused.length > 0) {
       const item = sittingUnused[0];
+      const itemClean = cleanItemName(item.it.name);
+      const sittingRecipe = suggestRecipe(item.it.name);
       return {
         title: variant([
           `Good morning${greeting} ☀️`,
-          `Your ${item.it.name} is waiting 🌅`,
+          `Your ${itemClean} is waiting 🌅`,
         ], dateSeed),
-        body: `Bought your ${item.it.name.toLowerCase()} ${item.sittingDays} days ago — let's cook it before it goes bad.`,
-        url: '/?tab=meals',
+        body: `Bought your ${itemClean} ${item.sittingDays} days ago — let's cook it before it goes bad.`,
+        url: mealsUrl(sittingRecipe),
       };
     }
 
@@ -329,23 +360,24 @@ function buildNudge(state: AppStateRow['state'], slot: string, dateSeed: string)
   // ── EXPIRY ALERT (~ 8:30 am) ────────────────────────────────────────────
   if (slot === 'expiry') {
     if (expiringSoon.length === 0) return null;
-    const head = expiringSoon[0].it.name;
+    const headRaw = expiringSoon[0].it.name;
+    const head = cleanItemName(headRaw);
     const word = expiringSoon[0].days <= 0 ? 'today' : 'tomorrow';
-    const recipe = suggestRecipe(head);
+    const recipe = suggestRecipe(headRaw);
     if (expiringSoon.length === 1) {
       return {
         title: `${head} expires ${word} ⚠️`,
         body: recipe
           ? `Cook ${recipe} ${isFamily ? `for ${kidName}` : isCouple ? 'tonight' : 'tonight'} — uses it up perfectly.`
           : `Make something with it ${isFamily ? `for ${kidName} ` : ''}before it goes bad.`,
-        url: '/?tab=meals',
+        url: mealsUrl(recipe),
       };
     }
-    const names = expiringSoon.map(e => e.it.name).slice(0, 3).join(', ');
+    const names = expiringSoon.map(e => cleanItemName(e.it.name)).slice(0, 3).join(', ');
     return {
       title: `${expiringSoon.length} items expiring 🍳`,
       body: `${names} need using. ${recipe ? `Try ${recipe}.` : 'Tap for ideas.'}`,
-      url: '/?tab=meals',
+      url: mealsUrl(recipe),
     };
   }
 
@@ -353,35 +385,37 @@ function buildNudge(state: AppStateRow['state'], slot: string, dateSeed: string)
   if (slot === 'meal') {
     if (isFamily) {
       const hero = expiringSoon[0]?.it || sittingUnused[0]?.it || items[0];
+      const heroClean = cleanItemName(hero?.name) || 'fridge';
       const recipe = suggestRecipe(hero?.name);
       return {
         title: `What's ${kidName} eating tonight? 🍳`,
         body: recipe
-          ? `${recipe} — kid-safe and uses your ${hero?.name?.toLowerCase() || 'fridge'}. Tap to start cooking.`
+          ? `${recipe} — kid-safe and uses your ${heroClean}. Tap to start cooking.`
           : `Pick something ${kidName} will love — open FridgeBee for tonight's plan.`,
-        url: '/?tab=meals',
+        url: mealsUrl(recipe),
       };
     }
     if (sittingUnused.length > 0) {
       const item = sittingUnused[0];
+      const itemClean = cleanItemName(item.it.name);
       const recipe = suggestRecipe(item.it.name);
       return {
-        title: `Don't forget your ${item.it.name} 🍳`,
+        title: `Don't forget your ${itemClean} 🍳`,
         body: recipe
           ? `Bought ${item.sittingDays} days ago — make ${recipe} tonight before it spoils.`
           : `Bought ${item.sittingDays} days ago — still good if you cook it tonight.`,
-        url: '/?tab=meals',
+        url: mealsUrl(recipe),
       };
     }
     if (expiringSoon.length > 0) {
-      const head = expiringSoon[0].it.name;
-      const recipe = suggestRecipe(head);
+      const headClean = cleanItemName(expiringSoon[0].it.name);
+      const recipe = suggestRecipe(expiringSoon[0].it.name);
       return {
         title: variant([`Time for dinner? 🍳`, `What's for dinner${greeting}? 🍳`], dateSeed),
         body: recipe
-          ? `${recipe} sounds good tonight — uses your ${head.toLowerCase()}.`
-          : `${head} expires soon. Tap for tonight's recipe ideas.`,
-        url: '/?tab=meals',
+          ? `${recipe} sounds good tonight — uses your ${headClean}.`
+          : `${headClean} expires soon. Tap for tonight's recipe ideas.`,
+        url: mealsUrl(recipe),
       };
     }
     if (items.length === 0) {
@@ -389,6 +423,7 @@ function buildNudge(state: AppStateRow['state'], slot: string, dateSeed: string)
     }
     // Plenty of items, nothing urgent — gentle nudge.
     const hero = items[0];
+    const heroClean = cleanItemName(hero.name);
     const recipe = suggestRecipe(hero.name);
     return {
       title: variant([
@@ -396,9 +431,9 @@ function buildNudge(state: AppStateRow['state'], slot: string, dateSeed: string)
         `Time to cook${greeting}? 🍳`,
       ], dateSeed),
       body: recipe
-        ? `${recipe} — uses your ${hero.name.toLowerCase()}. Tap to start.`
+        ? `${recipe} — uses your ${heroClean}. Tap to start.`
         : 'Open FridgeBee — pick something for tonight.',
-      url: '/?tab=meals',
+      url: mealsUrl(recipe),
     };
   }
 
@@ -409,7 +444,7 @@ function buildNudge(state: AppStateRow['state'], slot: string, dateSeed: string)
     const wasted = state.itemsWasted || 0;
     if (runningLow.length === 0 && wasted === 0) return null;
     if (runningLow.length > 0) {
-      const names = runningLow.slice(0, 3).map(it => it.name).join(', ');
+      const names = runningLow.slice(0, 3).map(it => cleanItemName(it.name)).join(', ');
       return {
         title: 'Running low 🛒',
         body: `${names} are getting low. Add to your shopping list?`,

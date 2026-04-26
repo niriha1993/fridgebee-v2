@@ -125,14 +125,17 @@ export type TestPushResult =
   | { ok: true; preview?: { title: string; body: string } }
   | { ok: false; reason: string };
 
-export async function sendTestPush(): Promise<TestPushResult> {
+/** `slot` lets the caller test a specific notification slot
+ * ("morning" | "expiry" | "meal" | "restock"). When omitted, the server
+ * picks a slot based on the user's enabled slots and current time-of-day. */
+export async function sendTestPush(slot?: string): Promise<TestPushResult> {
   const endpoint = await getCurrentPushEndpoint();
   if (!endpoint) return { ok: false, reason: 'no-subscription' };
   try {
     const res = await fetch('/api/push-test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ endpoint }),
+      body: JSON.stringify({ endpoint, slot: slot || null }),
     });
     if (!res.ok) return { ok: false, reason: `server-${res.status}` };
     const data = await res.json().catch(() => ({}));
