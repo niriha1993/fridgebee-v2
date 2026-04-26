@@ -1725,15 +1725,12 @@ export default function FridgeBee() {
     }));
     showT(list.length === 1 ? `Added ${list[0].name} ✓` : `Added ${list.length} items ✓`);
   }
+  // Plain delete — does NOT count as waste. Only the explicit
+  // "Threw it / wasted" action in the item modal bumps the waste counters.
   function removeItem(id: string) {
-    const it = s.items.find(i=>i.id===id);
-    const cat = it?.category || 'Other';
-    up({
-      items:s.items.filter(i=>i.id!==id),
-      itemsWasted:s.itemsWasted+1,
-      wastedByCategory:{...s.wastedByCategory, [cat]:(s.wastedByCategory[cat]||0)+1},
-    });
-    showT(`Removed ${it?.name||'item'}`);
+    const it = s.items.find(i => i.id === id);
+    up({ items: s.items.filter(i => i.id !== id) });
+    showT(`Removed ${it?.name || 'item'}`);
   }
   function markUsed(id: string) {
     const it = s.items.find(i=>i.id===id);
