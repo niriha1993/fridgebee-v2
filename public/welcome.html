@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="FridgeBee turns the food you already have into dinner tonight. Stop wasting groceries, stop wondering what to cook. Real recipes from your real fridge — for every kitchen, every diet.">
+<meta name="keywords" content="what to cook tonight, reduce food waste, fridge recipe app, AI meal planner, family dinner ideas, save money on groceries, expiry tracker, smart kitchen">
+<title>FridgeBee — What's for dinner? Your fridge already knows.</title>
+
+<!-- Open Graph / social previews — shown when the link is shared on WhatsApp, Twitter, LinkedIn, etc. -->
+<meta property="og:title" content="FridgeBee — What's for dinner? Your fridge already knows.">
+<meta property="og:description" content="Track your fridge. Cook what you have. Waste nothing. Real recipes from real fridges, for every kitchen.">
+<meta property="og:image" content="https://fridgebee.app/icon.svg">
+<meta property="og:url" content="https://fridgebee.app/welcome">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="FridgeBee — What's for dinner? Your fridge already knows.">
+<meta name="twitter:description" content="Track your fridge. Cook what you have. Waste nothing. Real recipes from real fridges.">
+<meta name="twitter:image" content="https://fridgebee.app/icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Cabinet+Grotesk:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --honey:#E8920A;--honey-light:#FEF3DC;--honey-dark:#A06208;
+  --cream:#FDFAF4;--cream-2:#F5EFE3;
+  --ink:#141210;--ink-2:#3D3830;--ink-3:#7A7060;--ink-4:#B0A898;
+  --white:#FFFFFF;--green:#2D6A2F;--green-light:#E8F5E9;
+  --red-light:#FEE8E8;--red:#C0392B;
+  --serif:'Instrument Serif',Georgia,serif;
+  --sans:'Cabinet Grotesk',sans-serif;
+  --radius:16px;--radius-sm:10px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html{scroll-behavior:smooth;}
+body{font-family:var(--sans);background:var(--cream);color:var(--ink);line-height:1.6;overflow-x:hidden;}
+a{color:inherit;text-decoration:none;}
+
+nav{position:fixed;top:0;left:0;right:0;z-index:200;display:flex;align-items:center;justify-content:space-between;padding:0 5vw;height:62px;background:rgba(253,250,244,0.92);backdrop-filter:blur(16px);border-bottom:1px solid rgba(20,18,16,0.08);}
+.logo{font-family:var(--serif);font-size:22px;display:flex;align-items:center;gap:6px;}
+.logo em{color:var(--honey);font-style:italic;}
+.nav-r{display:flex;align-items:center;gap:24px;}
+.nav-link{font-size:14px;color:var(--ink-3);transition:color .2s;}
+.nav-link:hover{color:var(--ink);}
+.nav-btn{background:var(--ink);color:var(--white);font-size:13px;font-weight:500;padding:9px 20px;border-radius:99px;transition:background .2s;}
+.nav-btn:hover{background:var(--honey);}
+
+.hero{min-height:100vh;padding:100px 5vw 80px;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center;max-width:1200px;margin:0 auto;}
+.hero-eyebrow{display:inline-flex;align-items:center;gap:8px;background:var(--honey-light);color:var(--honey-dark);font-size:12px;font-weight:500;padding:5px 14px;border-radius:99px;margin-bottom:16px;}
+.blink{width:6px;height:6px;border-radius:50%;background:var(--honey);animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.hero-product-label{font-size:13px;color:var(--ink-4);margin-bottom:16px;display:flex;align-items:center;gap:8px;}
+.hero-product-label span{background:var(--cream-2);border:1px solid rgba(20,18,16,.1);padding:3px 10px;border-radius:99px;font-size:12px;color:var(--ink-3);}
+h1{font-family:var(--serif);font-size:clamp(36px,5.2vw,58px);font-weight:400;line-height:1.13;letter-spacing:-.5px;margin-bottom:22px;}
+h1 em{color:var(--honey);font-style:italic;}
+.hero-sub{font-size:17px;color:var(--ink-2);line-height:1.7;margin-bottom:32px;max-width:460px;font-weight:300;}
+.cuisine-bar{display:flex;gap:8px;margin-bottom:30px;flex-wrap:wrap;}
+.cpill{padding:6px 14px;border-radius:99px;font-size:12px;font-weight:500;border:1px solid var(--ink-4);color:var(--ink-3);cursor:pointer;transition:all .2s;}
+.cpill.on{background:var(--ink);color:var(--white);border-color:var(--ink);}
+.hero-actions{display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap;}
+.btn-p{background:var(--ink);color:var(--white);padding:15px 30px;border-radius:99px;font-size:15px;font-weight:500;display:inline-flex;align-items:center;gap:8px;transition:background .2s,transform .15s;}
+.btn-p:hover{background:var(--honey);transform:scale(1.02);}
+.btn-g{font-size:14px;color:var(--ink-3);border-bottom:1px solid var(--ink-4);padding-bottom:1px;transition:color .2s;}
+.btn-g:hover{color:var(--ink);}
+.hero-trust{font-size:12px;color:var(--ink-4);}
+
+.hero-phone{display:flex;justify-content:center;position:relative;}
+.ph-shadow{position:absolute;bottom:-20px;left:50%;transform:translateX(-50%);width:200px;height:30px;background:rgba(20,18,16,.15);border-radius:50%;filter:blur(18px);}
+.ph{background:var(--ink);border-radius:44px;padding:12px;width:278px;box-shadow:0 48px 96px rgba(20,18,16,.22);}
+.ph-inner{background:var(--cream);border-radius:34px;overflow:hidden;}
+.ph-bar{background:var(--cream);padding:14px 16px 10px;display:flex;justify-content:space-between;align-items:center;border-bottom:.5px solid rgba(20,18,16,.08);}
+.ph-logo{font-family:var(--serif);font-size:15px;}
+.ph-logo em{color:var(--honey);font-style:italic;}
+.ph-who{display:flex;align-items:center;gap:6px;padding:9px 16px;border-bottom:.5px solid rgba(20,18,16,.08);font-size:11px;color:var(--ink-3);}
+.av{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;border:2px solid var(--honey);background:var(--honey-light);}
+.av2{width:26px;height:26px;border-radius:50%;background:var(--cream-2);border:1.5px dashed var(--ink-4);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--ink-4);}
+.ph-nudge{margin:10px 12px 0;background:var(--green-light);border:.5px solid #A5D6A7;border-radius:10px;padding:8px 10px;font-size:10.5px;color:var(--green);line-height:1.45;}
+.ph-sec{font-size:9px;color:var(--ink-4);text-transform:uppercase;letter-spacing:.08em;padding:9px 12px 4px;}
+.rslot{position:relative;height:172px;margin:0 12px 6px;}
+.rc{position:absolute;inset:0;background:var(--white);border-radius:12px;border:1.5px solid var(--honey);padding:12px;opacity:0;transform:translateX(18px);transition:opacity .35s,transform .35s;pointer-events:none;}
+.rc.show{opacity:1;transform:translateX(0);pointer-events:auto;}
+.rc.out{opacity:0;transform:translateX(-18px);}
+.rc-name{font-size:14px;font-weight:500;margin-bottom:2px;}
+.rc-meta{font-size:10.5px;color:var(--ink-3);margin-bottom:5px;}
+.rc-safe{display:inline-block;background:var(--green-light);color:var(--green);font-size:9.5px;padding:2px 7px;border-radius:99px;margin-bottom:7px;}
+.rc-pills{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;}
+.rp{font-size:9px;background:var(--cream-2);color:var(--ink-3);padding:2px 7px;border-radius:99px;}
+.rp.e{background:#FEF3DC;color:var(--honey-dark);}
+.rc-btn{background:var(--ink);color:var(--white);border-radius:7px;padding:7px;font-size:11px;font-weight:500;text-align:center;width:100%;border:none;}
+.clabel{text-align:center;padding:4px 0 8px;font-size:10px;color:var(--ink-4);letter-spacing:.04em;}
+.also{background:var(--white);border-radius:12px;border:.5px solid rgba(20,18,16,.1);padding:10px 12px;margin:0 12px 12px;display:flex;align-items:center;gap:9px;}
+.also-n{font-size:12px;font-weight:500;}
+.also-m{font-size:10px;color:var(--ink-4);}
+
+.ticker{background:var(--ink);padding:13px 0;overflow:hidden;}
+.tick-wrap{display:flex;white-space:nowrap;animation:ticker 32s linear infinite;}
+.ti{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:rgba(255,255,255,.5);padding:0 28px;border-right:1px solid rgba(255,255,255,.08);}
+.ti strong{color:rgba(255,255,255,.9);}
+@keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+
+.stats{max-width:1100px;margin:60px auto 0;padding:0 5vw;display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:rgba(20,18,16,.1);border:1px solid rgba(20,18,16,.1);border-radius:var(--radius);overflow:hidden;}
+.stat{background:var(--cream);padding:28px 24px;}
+.stat-n{font-family:var(--serif);font-size:40px;color:var(--honey);line-height:1;margin-bottom:6px;}
+.stat-l{font-size:13px;color:var(--ink-3);line-height:1.4;}
+
+.section{max-width:1100px;margin:0 auto;padding:90px 5vw;}
+.ey{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-4);margin-bottom:14px;}
+.sh{font-family:var(--serif);font-size:clamp(28px,4vw,44px);font-weight:400;line-height:1.2;margin-bottom:50px;}
+.sh em{color:var(--honey);font-style:italic;}
+
+.methods{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+.method{background:var(--white);border-radius:var(--radius);border:1px solid rgba(20,18,16,.08);padding:28px 24px;transition:border-color .2s,transform .2s;}
+.method:hover{border-color:var(--honey);transform:translateY(-2px);}
+.method-icon{font-size:36px;margin-bottom:14px;display:block;}
+.method-title{font-size:17px;font-weight:500;margin-bottom:8px;}
+.method-desc{font-size:13px;color:var(--ink-3);line-height:1.65;}
+.method-detail{margin-top:12px;background:var(--cream-2);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;color:var(--ink-3);line-height:1.6;}
+.method-detail strong{color:var(--ink-2);font-weight:500;}
+
+.loop{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;background:rgba(20,18,16,.08);border-radius:var(--radius);overflow:hidden;}
+.loop-step{background:var(--cream);padding:32px 24px;transition:background .2s;}
+.loop-step:hover{background:var(--honey-light);}
+.loop-n{font-family:var(--serif);font-size:48px;color:rgba(20,18,16,.07);line-height:1;margin-bottom:14px;}
+.loop-ico{font-size:28px;margin-bottom:10px;display:block;}
+.loop-step h3{font-size:16px;font-weight:500;margin-bottom:8px;}
+.loop-step p{font-size:13px;color:var(--ink-3);line-height:1.6;}
+
+.fdark{background:var(--ink);padding:90px 5vw;}
+.fdark-in{max-width:1100px;margin:0 auto;}
+.fdark .ey{color:rgba(255,255,255,.3);}
+.fdark .sh{color:var(--white);margin-bottom:0;}
+.fdark .sh em{color:var(--honey);}
+.fg{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:rgba(255,255,255,.07);border-radius:var(--radius);overflow:hidden;margin-top:50px;}
+.fi{background:var(--ink);padding:32px;transition:background .2s;}
+.fi:hover{background:#1f1c18;}
+.fi-ico{font-size:28px;margin-bottom:16px;display:block;}
+.fi h3{font-size:16px;font-weight:500;color:var(--white);margin-bottom:8px;}
+.fi p{font-size:13px;color:rgba(255,255,255,.4);line-height:1.65;}
+.fb{display:inline-block;font-size:10px;font-weight:500;padding:2px 8px;border-radius:99px;margin-top:12px;}
+.fb-pro{background:var(--honey);color:var(--white);}
+.fb-free{background:var(--green);color:var(--white);}
+
+.truth-section{max-width:1100px;margin:0 auto;padding:0 5vw 90px;}
+.truth-box{background:var(--ink);border-radius:var(--radius);padding:48px;display:grid;grid-template-columns:1fr 1fr;gap:50px;align-items:center;}
+.truth-left h2{font-family:var(--serif);font-size:clamp(24px,3.5vw,36px);color:var(--white);font-weight:400;margin-bottom:14px;line-height:1.3;}
+.truth-left h2 em{color:var(--honey);font-style:italic;}
+.truth-left p{font-size:14px;color:rgba(255,255,255,.5);line-height:1.7;}
+.truth-examples{display:flex;flex-direction:column;gap:10px;}
+.te{border-radius:var(--radius-sm);padding:12px 14px;font-size:13px;line-height:1.5;}
+.te-bad{background:var(--red-light);border:1px solid #FCA5A5;color:var(--red);}
+.te-good{background:var(--green-light);border:1px solid #A5D6A7;color:var(--green);}
+.te-label{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;opacity:.7;}
+.te strong{font-weight:500;}
+
+.scan-section{background:var(--cream-2);border-top:1px solid rgba(20,18,16,.08);border-bottom:1px solid rgba(20,18,16,.08);padding:90px 5vw;}
+.scan-inner{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:70px;align-items:center;}
+.scan-vis{background:var(--white);border-radius:var(--radius);padding:28px;border:1px solid rgba(20,18,16,.08);}
+.scan-steps{display:flex;flex-direction:column;gap:12px;}
+.ss{display:flex;align-items:flex-start;gap:14px;padding:14px;background:var(--cream);border-radius:var(--radius-sm);border:1px solid rgba(20,18,16,.06);}
+.ss-i{width:36px;height:36px;border-radius:10px;background:var(--honey-light);display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0;}
+.ss-t{font-size:13px;font-weight:500;margin-bottom:2px;}
+.ss-d{font-size:11px;color:var(--ink-3);line-height:1.5;}
+.scan-result{background:var(--green-light);border:1px solid #A5D6A7;border-radius:var(--radius-sm);padding:14px 16px;display:flex;align-items:center;gap:12px;margin-top:4px;}
+.scan-result-t{font-size:13px;color:var(--green);font-weight:500;}
+.scan-result-s{font-size:11px;color:var(--green);opacity:.7;}
+.scan-stores{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;}
+.store-tag{font-size:11px;background:var(--cream-2);border:1px solid rgba(20,18,16,.1);padding:4px 10px;border-radius:99px;color:var(--ink-3);}
+
+.csec{max-width:1100px;margin:0 auto;padding:90px 5vw;}
+.cg{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:40px;}
+.cc{background:var(--white);border-radius:var(--radius);border:1px solid rgba(20,18,16,.08);padding:24px 16px;text-align:center;transition:border-color .2s,transform .2s;}
+.cc:hover{border-color:var(--honey);transform:translateY(-3px);}
+.cc-i{font-size:36px;margin-bottom:10px;display:block;}
+.cc-n{font-size:14px;font-weight:500;margin-bottom:4px;}
+.cc-d{font-size:11px;color:var(--ink-4);line-height:1.4;}
+
+.insights-section{background:var(--cream-2);border-top:1px solid rgba(20,18,16,.08);padding:90px 5vw;}
+.insights-inner{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center;}
+.insight-cards{display:flex;flex-direction:column;gap:12px;}
+.ic{background:var(--white);border-radius:var(--radius-sm);border:1px solid rgba(20,18,16,.07);padding:16px 18px;display:flex;align-items:center;gap:14px;}
+.ic-icon{font-size:24px;flex-shrink:0;}
+.ic-label{font-size:12px;color:var(--ink-4);margin-bottom:2px;}
+.ic-val{font-size:16px;font-weight:500;}
+.ic-val.green{color:var(--green);}
+.ic-val.amber{color:var(--honey-dark);}
+.bar-chart{display:flex;align-items:flex-end;gap:6px;height:80px;padding:0 2px;}
+.bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;}
+.bar{width:100%;border-radius:4px 4px 0 0;}
+.bar-used{background:var(--green);}
+.bar-wasted{background:#FCA5A5;}
+.bar-day{font-size:9px;color:var(--ink-4);}
+
+.psec{max-width:900px;margin:0 auto;padding:90px 5vw;text-align:center;}
+.pcards{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:44px;text-align:left;}
+.pc{background:var(--white);border-radius:20px;border:1px solid rgba(20,18,16,.1);padding:30px;}
+.pc.hot{background:var(--ink);border-color:var(--ink);}
+.pf-tag{display:inline-block;background:var(--honey);color:var(--white);font-size:10px;font-weight:500;padding:3px 10px;border-radius:99px;margin-bottom:10px;}
+.pn-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-4);margin-bottom:10px;}
+.pc.hot .pn-label{color:rgba(255,255,255,.3);}
+.pp{font-family:var(--serif);font-size:46px;font-weight:400;line-height:1;margin-bottom:4px;}
+.pc.hot .pp{color:var(--white);}
+.pb{font-size:12px;color:var(--ink-4);margin-bottom:26px;}
+.pc.hot .pb{color:rgba(255,255,255,.3);}
+.week-note{background:var(--honey-light);border-radius:var(--radius-sm);padding:10px 14px;font-size:12px;color:var(--honey-dark);margin-bottom:14px;font-weight:500;}
+.pfl{list-style:none;display:flex;flex-direction:column;gap:10px;margin-bottom:26px;}
+.pfl li{font-size:13px;color:var(--ink-3);display:flex;align-items:flex-start;gap:8px;}
+.pc.hot .pfl li{color:rgba(255,255,255,.6);}
+.pfl li::before{content:'✓';color:var(--green);font-weight:500;flex-shrink:0;}
+.pc.hot .pfl li::before{color:var(--honey);}
+.pbtn{display:block;text-align:center;padding:13px;border-radius:99px;font-size:14px;font-weight:500;border:1px solid rgba(20,18,16,.15);color:var(--ink);transition:all .2s;}
+.pbtn:hover{background:var(--ink);color:var(--white);border-color:var(--ink);}
+.pc.hot .pbtn{background:var(--honey);color:var(--white);border-color:var(--honey);}
+.pc.hot .pbtn:hover{background:#c97d07;}
+
+.ctaf{background:var(--honey);padding:80px 5vw;text-align:center;}
+.ctaf h2{font-family:var(--serif);font-size:clamp(28px,4vw,48px);color:var(--white);font-weight:400;margin-bottom:14px;line-height:1.2;}
+.ctaf p{font-size:16px;color:rgba(255,255,255,.75);margin-bottom:30px;font-weight:300;}
+.bw{background:var(--white);color:var(--honey-dark);padding:15px 34px;border-radius:99px;font-size:15px;font-weight:500;display:inline-block;transition:transform .15s;}
+.bw:hover{transform:scale(1.03);}
+.ctaf-fine{font-size:12px;color:rgba(255,255,255,.5);margin-top:12px;}
+
+footer{background:var(--ink);padding:40px 5vw;}
+.footer-inner{max-width:1100px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;}
+.fl{font-family:var(--serif);font-size:18px;color:var(--white);}
+.fl em{color:var(--honey);font-style:italic;}
+.fc{font-size:12px;color:rgba(255,255,255,.3);}
+.flinks{display:flex;gap:20px;}
+.flinks a{font-size:12px;color:rgba(255,255,255,.45);transition:color .2s;}
+.flinks a:hover{color:rgba(255,255,255,.85);}
+
+.fu{opacity:0;transform:translateY(24px);transition:opacity .6s,transform .6s;}
+.fu.vis{opacity:1;transform:translateY(0);}
+
+@media(max-width:1000px){
+  .hero{grid-template-columns:1fr;}
+  .hero-phone{display:none;}
+  .loop{grid-template-columns:repeat(2,1fr);}
+  .fg{grid-template-columns:1fr 1fr;}
+  .cg{grid-template-columns:repeat(3,1fr);}
+  .stats{grid-template-columns:repeat(2,1fr);}
+  .scan-inner,.insights-inner,.truth-box{grid-template-columns:1fr;}
+  .pcards{grid-template-columns:1fr;}
+  .methods{grid-template-columns:1fr;}
+}
+@media(max-width:600px){
+  .fg{grid-template-columns:1fr;}
+  .cg{grid-template-columns:repeat(2,1fr);}
+  .nav-link{display:none;}
+  .loop{grid-template-columns:1fr;}
+  .footer-inner{flex-direction:column;text-align:center;}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="https://fridgebee.app/" class="logo">🐝 <span>fridge<em>Bee</em></span></a>
+  <div class="nav-r">
+    <a href="#how" class="nav-link">How it works</a>
+    <a href="#cuisines" class="nav-link">Cuisines</a>
+    <a href="#pricing" class="nav-link">Pricing</a>
+    <a href="https://fridgebee.app/" class="nav-btn">Try free →</a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div>
+    <div class="hero-eyebrow"><span class="blink"></span> Beta open · 7 days fully free · No card needed</div>
+    <div class="hero-product-label">
+      <span>Save groceries</span>
+      <span>Skip shopping trips</span>
+      <span>Cook tonight</span>
+    </div>
+    <h1>What's for dinner?<br><em>Your fridge</em><br>already knows.</h1>
+    <p class="hero-sub">FridgeBee turns the food you already have into dinner tonight. Track what's in your fridge, get real recipes back, waste nothing — for every kitchen, every diet, every family.</p>
+    <div class="cuisine-bar">
+      <div class="cpill on" onclick="sw(0,this)">🥩 Western</div>
+      <div class="cpill" onclick="sw(1,this)">🫒 Mediterranean</div>
+      <div class="cpill" onclick="sw(2,this)">🍜 East Asian</div>
+      <div class="cpill" onclick="sw(3,this)">🌶️ Global</div>
+    </div>
+    <div class="hero-actions">
+      <a href="https://fridgebee.app/" class="btn-p">Start free — 7 days unlimited ↗</a>
+      <a href="#how" class="btn-g">See how it works →</a>
+    </div>
+    <p class="hero-trust">Western · Mediterranean · East Asian · Latin · South Asian · Every kitchen supported</p>
+  </div>
+
+  <div class="hero-phone">
+    <div class="ph-shadow"></div>
+    <div class="ph">
+      <div class="ph-inner">
+        <div class="ph-bar"><div class="ph-logo">fridge<em>Bee</em></div><div style="font-size:10px;color:var(--ink-4);">Meals</div></div>
+        <div class="ph-who">Cooking for &nbsp;<div class="av">👩</div><div class="av">👧</div><div class="av2">+</div></div>
+        <div class="ph-nudge" id="pn">🍅 <strong>Tomatoes need using today.</strong> Both picks below use them.</div>
+        <div class="ph-sec">Best pick — Dinner</div>
+        <div class="rslot">
+          <div class="rc show" id="c0"><div class="rc-name">Pasta pomodoro</div><div class="rc-meta">⏱ 20 min · 🔥 410 kcal</div><div class="rc-safe">👶 Kid-friendly</div><div class="rc-pills"><span class="rp e">Tomatoes</span><span class="rp">Pasta</span><span class="rp">Garlic</span><span class="rp">Basil</span><span class="rp">Olive oil</span></div><button class="rc-btn">▶ Cook this</button></div>
+          <div class="rc" id="c1"><div class="rc-name">Chickpea shakshuka</div><div class="rc-meta">⏱ 22 min · 🔥 355 kcal</div><div class="rc-safe">👶 Kid-friendly</div><div class="rc-pills"><span class="rp e">Tomatoes</span><span class="rp">Chickpeas</span><span class="rp">Onion</span><span class="rp">Eggs</span></div><button class="rc-btn">▶ Cook this</button></div>
+          <div class="rc" id="c2"><div class="rc-name">Tofu bok choy stir-fry</div><div class="rc-meta">⏱ 14 min · 🔥 270 kcal</div><div class="rc-safe">👶 Kid-friendly</div><div class="rc-pills"><span class="rp e">Bok choy</span><span class="rp">Tofu</span><span class="rp">Soy sauce</span><span class="rp">Ginger</span></div><button class="rc-btn">▶ Cook this</button></div>
+          <div class="rc" id="c3"><div class="rc-name">Black bean tacos</div><div class="rc-meta">⏱ 16 min · 🔥 380 kcal</div><div class="rc-safe">👶 Kid-friendly</div><div class="rc-pills"><span class="rp e">Tomatoes</span><span class="rp">Black beans</span><span class="rp">Avocado</span><span class="rp">Tortilla</span></div><button class="rc-btn">▶ Cook this</button></div>
+        </div>
+        <div class="clabel" id="cl">🥩 Western · Expiry-first</div>
+        <div class="ph-sec">Also works</div>
+        <div class="also"><div style="font-size:22px;" id="ai">🥗</div><div><div class="also-n" id="an">Tomato basil bruschetta</div><div class="also-m" id="am">⏱ 12 min · Family-safe</div></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TICKER -->
+<div class="ticker">
+  <div class="tick-wrap">
+    <span class="ti">🐝 <strong>FridgeBee</strong> — Food Expiry Tracker</span>
+    <span class="ti">🤖 <strong>AI-Powered</strong> Recipe Discovery</span>
+    <span class="ti">📷 <strong>Scan receipts</strong> — AI reads every item instantly</span>
+    <span class="ti">🎤 <strong>Voice input</strong> — global English &amp; local dialects</span>
+    <span class="ti">🥩 <strong>Western kitchens</strong> — pasta, salads, grilled, baked</span>
+    <span class="ti">🫒 <strong>Mediterranean</strong> — shakshuka, hummus, lemon herb</span>
+    <span class="ti">🍜 <strong>East Asian</strong> — tofu, bok choy, stir-fry, ramen</span>
+    <span class="ti">👶 <strong>Toddler-safe</strong> filtering per family member</span>
+    <span class="ti">🔔 <strong>Expiry nudges</strong> before food goes bad</span>
+    <span class="ti">🚫 <strong>No recipe lies</strong> — only what's in your fridge</span>
+    <span class="ti">📊 <strong>Waste insights</strong> — used vs tossed, money saved</span>
+    <span class="ti">🐝 <strong>FridgeBee</strong> — Food Expiry Tracker</span>
+    <span class="ti">🤖 <strong>AI-Powered</strong> Recipe Discovery</span>
+    <span class="ti">📷 <strong>Scan receipts</strong> — AI reads every item instantly</span>
+    <span class="ti">🎤 <strong>Voice input</strong> — global English &amp; local dialects</span>
+    <span class="ti">🥩 <strong>Western kitchens</strong> — pasta, salads, grilled, baked</span>
+    <span class="ti">🫒 <strong>Mediterranean</strong> — shakshuka, hummus, lemon herb</span>
+    <span class="ti">🍜 <strong>East Asian</strong> — tofu, bok choy, stir-fry, ramen</span>
+    <span class="ti">👶 <strong>Toddler-safe</strong> filtering per family member</span>
+    <span class="ti">🔔 <strong>Expiry nudges</strong> before food goes bad</span>
+    <span class="ti">🚫 <strong>No recipe lies</strong> — only what's in your fridge</span>
+  </div>
+</div>
+
+<!-- STATS — 4 honest stats -->
+<div class="stats fu">
+  <div class="stat"><div class="stat-n">7</div><div class="stat-l">Days of full unlimited access — completely free, no card</div></div>
+  <div class="stat"><div class="stat-n">6+</div><div class="stat-l">Cuisine profiles — Western to Mediterranean to East Asian, auto-detected by location</div></div>
+  <div class="stat"><div class="stat-n">3</div><div class="stat-l">Ways to add groceries — scan a receipt, speak, or type</div></div>
+  <div class="stat"><div class="stat-n">0</div><div class="stat-l">Recipes suggested for ingredients not actually in your fridge</div></div>
+</div>
+
+<!-- ADD METHODS -->
+<section class="section" id="how">
+  <div class="ey">Three ways to add groceries</div>
+  <div class="sh">Your fridge, <em>your way.</em></div>
+  <div class="methods">
+    <div class="method">
+      <span class="method-icon">📷</span>
+      <div class="method-title">Scan</div>
+      <div class="method-desc">Snap a receipt, a grocery app screenshot, or your open fridge. AI reads every line item — name, quantity, unit, category, and the printed price. No estimating.</div>
+      <div class="method-detail"><strong>Works with:</strong> Whole Foods · Trader Joe's · Walmart · Kroger · Tesco · Sainsbury's · Ocado · Coles · Woolworths · NTUC FairPrice · Cold Storage · Instacart · DoorDash · Amazon Fresh — and any grocery receipt photo.</div>
+    </div>
+    <div class="method">
+      <span class="method-icon">🎤</span>
+      <div class="method-title">Voice</div>
+      <div class="method-desc">Just say what you bought. AI transcribes and parses — with phonetic recovery built for local dialects and accents, not just standard English.</div>
+      <div class="method-detail"><strong>Global English plus local dialects:</strong> Singlish · Hinglish · Spanish · "courgette" / "zucchini" · "aubergine" / "eggplant" · "capsicum" / "bell pepper" — handled.</div>
+    </div>
+    <div class="method">
+      <span class="method-icon">✍️</span>
+      <div class="method-title">Type</div>
+      <div class="method-desc">Type naturally — "spinach, 6 eggs, 500g chicken breast, parmesan" — and the AI parser splits, normalises, and logs everything in seconds.</div>
+      <div class="method-detail"><strong>Per-item shelf life set automatically:</strong> spinach 3d · cilantro 4d · avocado 5d · eggs 21d · cheese 21d · butter 30d — not a flat 7-day default for everything.</div>
+    </div>
+  </div>
+</section>
+
+<!-- CORE LOOP -->
+<section style="background:var(--cream-2);border-top:1px solid rgba(20,18,16,.08);border-bottom:1px solid rgba(20,18,16,.08);padding:90px 5vw;">
+  <div style="max-width:1100px;margin:0 auto;">
+    <div class="ey">The core loop</div>
+    <div class="sh">Add → Track → Cook → <em>Less waste.</em></div>
+    <div class="loop">
+      <div class="loop-step"><span class="loop-ico">🧺</span><div class="loop-n">01</div><h3>Add what you bought</h3><p>Scan, voice, or type. Each shopping trip gets a batch ID — date, method, item count, and total spend logged automatically in your fridge history.</p></div>
+      <div class="loop-step"><span class="loop-ico">🌿</span><div class="loop-n">02</div><h3>Track what's expiring</h3><p>Fridge view groups items: Expired · Use in a few days · Still fresh. Per-item shelf life, not a flat default. Country-aware prices, sanity-capped so a typo never logs a $1000 lettuce.</p></div>
+      <div class="loop-step"><span class="loop-ico">🍽️</span><div class="loop-n">03</div><h3>Discover what to cook</h3><p>Breakfast, lunch, snack, or dinner. Best pick + Also works. Expiry-first. Family-filtered. AI-powered recipes that only use what's actually in your fridge.</p></div>
+      <div class="loop-step"><span class="loop-ico">📊</span><div class="loop-n">04</div><h3>See your impact</h3><p>Items used vs wasted. Most-wasted category. Money saved vs lost. 7-day bar chart. Only the explicit "Threw it" button counts — no assumptions made.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES DARK -->
+<section class="fdark">
+  <div class="fdark-in">
+    <div class="ey">What makes FridgeBee different</div>
+    <div class="sh">Built for how <em>real families</em> actually cook.</div>
+    <div class="fg">
+      <div class="fi"><span class="fi-ico">👶</span><h3>Family-safe filtering</h3><p>Add each member's allergies, dislikes, diet, and age. Recipes get a name-safe tag only when every member's constraints pass. Toddlers get no whole nuts or honey. Infants no salt or sugar. Age rules are built in.</p><span class="fb fb-free">Free</span></div>
+      <div class="fi"><span class="fi-ico">🍛</span><h3>Cuisine-matched recipes</h3><p>Auto-detected by timezone — IN/PK gets Indian first, SG/MY gets East Asian, US/GB/AU gets Western. Diet ≠ cuisine. Indians can be non-veg. The picker only removes meat if you actually select Vegetarian.</p><span class="fb fb-free">Free</span></div>
+      <div class="fi"><span class="fi-ico">🌿</span><h3>Expiry-first suggestions</h3><p>Every recipe suggestion prioritises what's closest to expiry. A green banner appears when an expiring item appears in both picks. You always know why a recipe was chosen.</p><span class="fb fb-free">Free</span></div>
+      <div class="fi"><span class="fi-ico">🔔</span><h3>Smart expiry nudges</h3><p>Browser notifications fire once per day when something's expiring. Copy is dynamic — "Spinach expires today" for one item, "3 items expiring — Spinach + 2 more" for many. Tap goes straight to Meals.</p><span class="fb fb-free">Free</span></div>
+      <div class="fi"><span class="fi-ico">📅</span><h3>3-day meal plan + Swap</h3><p>Today / Tomorrow / Day after — each with sub-labels. Swap cycles pre-fetched alternatives with a slide animation and "Option N of M" counter. No loading delay on swap.</p><span class="fb fb-pro">Pro</span></div>
+      <div class="fi"><span class="fi-ico">💰</span><h3>Price memory</h3><p>Scan a $14.50 ghee once — next time you add ghee manually, FridgeBee uses your real price. Your waste report shows actual dollars lost, not estimates.</p><span class="fb fb-pro">Pro</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- RECIPE TRUTH -->
+<section class="truth-section fu">
+  <div class="truth-box">
+    <div class="truth-left">
+      <h2>AI recipes that <em>never lie</em> about your fridge.</h2>
+      <p style="margin-bottom:16px;">Every other app suggests recipes based on what sounds good. FridgeBee uses a two-layer guard — the AI only sees your exact fridge contents, and every result is post-filtered to drop any recipe whose hero ingredient isn't actually in your fridge.</p>
+      <p>If you have spinach, tomatoes, garlic, pasta, parmesan — you get Pasta Pomodoro, Spinach &amp; Garlic Pasta, Tomato Bruschetta. Not Salmon Risotto. Not Chicken Alfredo.</p>
+    </div>
+    <div class="truth-examples">
+      <div class="te te-bad">
+        <div class="te-label">❌ Every other app</div>
+        <strong>Salmon Risotto</strong> suggested — but you have no salmon.<br>
+        <strong>Chicken Alfredo</strong> suggested — but you have no chicken.
+      </div>
+      <div class="te te-good">
+        <div class="te-label">✅ FridgeBee</div>
+        You have spinach, tomatoes, garlic, pasta, parmesan.<br>
+        You get → <strong>Pasta Pomodoro · Spinach &amp; Garlic Pasta · Tomato Bruschetta</strong>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SCAN SECTION -->
+<section class="scan-section">
+  <div class="scan-inner">
+    <div>
+      <div class="ey">Receipt scanning</div>
+      <div class="sh" style="margin-bottom:20px;">Snap it.<br><em>Fridge updated.</em></div>
+      <p style="font-size:15px;color:var(--ink-3);line-height:1.7;margin-bottom:16px;">Take a photo of any grocery receipt or screenshot your delivery app. AI vision reads every line item — name, quantity, unit, category, and the printed price. No manual entry needed.</p>
+      <p style="font-size:15px;color:var(--ink-3);line-height:1.7;margin-bottom:28px;">Each shopping trip is saved as a batch — date, method, item count, and total spend. Your fridge history shows exactly what came in and when.</p>
+      <a href="https://fridgebee.app/" class="btn-p" style="display:inline-flex;">Start free — no card needed ↗</a>
+    </div>
+    <div class="scan-vis">
+      <div class="scan-steps">
+        <div class="ss"><div class="ss-i">📷</div><div><div class="ss-t">Snap your receipt or screenshot</div><div class="ss-d">Any grocery receipt photo or delivery app screenshot</div></div></div>
+        <div class="ss"><div class="ss-i">🤖</div><div><div class="ss-t">AI reads every line item</div><div class="ss-d">Name · Qty · Unit · Category · Printed price — all extracted instantly</div></div></div>
+        <div class="ss"><div class="ss-i">🌿</div><div><div class="ss-t">Expiry dates set per item</div><div class="ss-d">Spinach 3d · Cilantro 4d · Avocado 5d · Eggs 21d · Butter 30d — not a flat default</div></div></div>
+        <div class="scan-result"><div style="font-size:22px;">✅</div><div><div class="scan-result-t">12 items logged · $43.20 tracked</div><div class="scan-result-s">Expiry dates set · Recipes ready · History saved</div></div></div>
+        <div class="scan-stores">
+          <span class="store-tag">Whole Foods</span><span class="store-tag">Trader Joe's</span><span class="store-tag">Walmart</span><span class="store-tag">Kroger</span><span class="store-tag">Tesco</span><span class="store-tag">Sainsbury's</span><span class="store-tag">Ocado</span><span class="store-tag">Coles</span><span class="store-tag">Woolworths</span><span class="store-tag">NTUC FairPrice</span><span class="store-tag">Instacart</span><span class="store-tag">DoorDash</span><span class="store-tag">+ any receipt</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CUISINES -->
+<section class="csec" id="cuisines">
+  <div class="ey">Cuisine support</div>
+  <div class="sh" style="margin-bottom:0;">Not just one kitchen.<br><em>Every kitchen.</em></div>
+  <div class="cg">
+    <div class="cc"><span class="cc-i">🥩</span><div class="cc-n">Western</div><div class="cc-d">Pasta, grilled, baked, salads — default for US/GB/AU/CA</div></div>
+    <div class="cc"><span class="cc-i">🫒</span><div class="cc-n">Mediterranean</div><div class="cc-d">Olive oil, legumes, fresh herbs, shakshuka, hummus</div></div>
+    <div class="cc"><span class="cc-i">🍜</span><div class="cc-n">East Asian</div><div class="cc-d">Stir-fry, noodles, rice, tofu — default for SG/MY/JP</div></div>
+    <div class="cc"><span class="cc-i">🌮</span><div class="cc-n">Latin</div><div class="cc-d">Beans, bold spice, rice dishes, tacos, fajitas</div></div>
+    <div class="cc"><span class="cc-i">🍛</span><div class="cc-n">South Asian</div><div class="cc-d">Dal, sabzi, curry, biryani, roti — default for IN/PK</div></div>
+  </div>
+</section>
+
+<!-- INSIGHTS -->
+<section class="insights-section">
+  <div class="insights-inner">
+    <div>
+      <div class="ey">Waste insights</div>
+      <div class="sh" style="margin-bottom:16px;">See exactly what you<br><em>used vs tossed.</em></div>
+      <p style="font-size:15px;color:var(--ink-3);line-height:1.7;margin-bottom:14px;">Items used vs wasted. Most-wasted category. Money saved vs lost. 7-day bar chart. Only the explicit "Threw it" button counts as waste — no assumptions, no guilt-tripping.</p>
+      <p style="font-size:14px;color:var(--ink-4);">Your waste report uses actual scanned prices — not estimates. When it says you saved $23.40 this month, that's the real number from your receipts.</p>
+    </div>
+    <div>
+      <div class="insight-cards">
+        <div class="ic"><span class="ic-icon">✅</span><div><div class="ic-label">Items used this week</div><div class="ic-val green">18 items · $67.20 saved</div></div></div>
+        <div class="ic"><span class="ic-icon">🗑️</span><div><div class="ic-label">Items wasted this week</div><div class="ic-val amber">3 items · $8.40 lost</div></div></div>
+        <div class="ic"><span class="ic-icon">📦</span><div><div class="ic-label">Most wasted category</div><div class="ic-val">Leafy greens</div></div></div>
+      </div>
+      <div style="background:var(--white);border-radius:var(--radius-sm);border:1px solid rgba(20,18,16,.07);padding:16px 18px;margin-top:12px;">
+        <div style="font-size:11px;color:var(--ink-4);margin-bottom:10px;text-transform:uppercase;letter-spacing:.07em;">7-day usage</div>
+        <div class="bar-chart">
+          <div class="bar-wrap"><div class="bar bar-used" style="height:60px;"></div><div class="bar-day">Mon</div></div>
+          <div class="bar-wrap"><div class="bar bar-used" style="height:40px;"></div><div class="bar-day">Tue</div></div>
+          <div class="bar-wrap"><div class="bar bar-used" style="height:70px;"></div><div class="bar-day">Wed</div></div>
+          <div class="bar-wrap"><div class="bar bar-wasted" style="height:20px;"></div><div class="bar-day">Thu</div></div>
+          <div class="bar-wrap"><div class="bar bar-used" style="height:50px;"></div><div class="bar-day">Fri</div></div>
+          <div class="bar-wrap"><div class="bar bar-used" style="height:65px;"></div><div class="bar-day">Sat</div></div>
+          <div class="bar-wrap"><div class="bar bar-wasted" style="height:15px;"></div><div class="bar-day">Sun</div></div>
+        </div>
+        <div style="display:flex;gap:16px;margin-top:10px;">
+          <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-3);"><div style="width:10px;height:10px;border-radius:2px;background:var(--green);"></div>Used</div>
+          <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-3);"><div style="width:10px;height:10px;border-radius:2px;background:#FCA5A5;"></div>Wasted</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRICING -->
+<section class="psec" id="pricing">
+  <div class="ey">Pricing</div>
+  <div class="sh" style="margin-bottom:8px;">Simple, honest pricing.</div>
+  <p style="font-size:15px;color:var(--ink-3);">7 days fully free — no card, no catch. Upgrade only if you love it.</p>
+  <div class="pcards">
+    <div class="pc">
+      <div class="week-note">🎁 First 7 days — everything unlocked, completely free</div>
+      <div class="pn-label">Free after welcome week</div>
+      <div class="pp">$0</div>
+      <div class="pb">No credit card · No expiry</div>
+      <ul class="pfl">
+        <li>5 AI recipe suggestions per day</li>
+        <li>Scan, voice &amp; manual input</li>
+        <li>1 household member</li>
+        <li>By-time meal view — Breakfast · Lunch · Snack · Dinner</li>
+        <li>Per-item expiry tracking</li>
+        <li>Browser expiry notifications</li>
+        <li>Family allergy &amp; diet filtering</li>
+        <li>Basic waste tracking</li>
+      </ul>
+      <a href="https://fridgebee.app/" class="pbtn">Start free — 7 days unlimited</a>
+    </div>
+    <div class="pc hot">
+      <div class="pf-tag">🐝 Beta discount — locked forever</div>
+      <div class="pn-label">Pro</div>
+      <div class="pp"><span id="price-monthly">$2.79</span><span style="font-size:18px;font-weight:300;">/mo</span></div>
+      <div class="pb">Or <span id="price-yearly">$19.99</span>/year · Goes to <span id="price-regular">$3.99</span>/mo after beta</div>
+      <ul class="pfl">
+        <li>Unlimited AI recipes — no daily cap</li>
+        <li>3-day meal plan with Swap</li>
+        <li>Unlimited household members</li>
+        <li>Full waste insights + money saved vs lost</li>
+        <li>Monthly digest report</li>
+        <li>Price memory — your real grocery prices</li>
+        <li>Shopping trip history with spend tracking</li>
+        <li>Priority AI — faster recipe generation</li>
+      </ul>
+      <a href="https://fridgebee.app/" class="pbtn">Start 7-day free trial →</a>
+    </div>
+  </div>
+  <p style="font-size:12px;color:var(--ink-4);margin-top:16px;">Beta price locked forever for early members. After beta, Pro goes to <span id="price-regular-2">$3.99</span>/month.</p>
+</section>
+
+<!-- FINAL CTA -->
+<section class="ctaf">
+  <h2>The "what do I cook?"<br>panic stops today.</h2>
+  <p>Join FridgeBee free — 7 days unlimited, no card needed.<br>Breakfast, lunch, snack, dinner — your fridge already knows.</p>
+  <a href="https://fridgebee.app/" class="bw">Start free — takes 2 minutes</a>
+  <p class="ctaf-fine">Works on any browser · iOS &amp; Android coming soon · No signup required to start</p>
+</section>
+
+<footer>
+  <div class="footer-inner">
+    <a href="https://fridgebee.app/" class="fl">fridge<em>Bee</em> 🐝</a>
+    <p class="fc">© 2025 FridgeBee</p>
+    <div class="flinks">
+      <a href="https://fridgebee.app/blog">Blog</a>
+      <a href="https://fridgebee.app/privacy">Privacy</a>
+      <a href="https://fridgebee.app/contact">Contact</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+var C=[
+  {nudge:'🍅 <strong>Tomatoes need using today.</strong> Both picks below use them.',label:'🥩 Western · US / UK / AU / CA',ai:'🥗',an:'Tomato basil bruschetta',am:'⏱ 12 min · Family-safe'},
+  {nudge:'🌶️ <strong>Peppers &amp; tomatoes expiring.</strong> Both picks use them tonight.',label:'🫒 Mediterranean · Greek / Italian / Levantine',ai:'🥘',an:'Lemon herb chicken with couscous',am:'⏱ 22 min · Family-safe'},
+  {nudge:'🥦 <strong>Bok choy expiring soon.</strong> Both picks use it tonight.',label:'🍜 East Asian · SG / MY / JP / CN',ai:'🍜',an:'Miso soup with tofu',am:'⏱ 16 min · Kid-friendly'},
+  {nudge:'🌿 <strong>Coriander needs using today.</strong> Both picks below use it.',label:'🌶️ Global · Mexican / Indian / Thai',ai:'🌮',an:'Black bean tacos with salsa',am:'⏱ 16 min · Vegan-safe'}
+];
+var cur=0;
+function sw(idx,el){
+  if(idx===cur)return;
+  var old=document.getElementById('c'+cur);
+  var nw=document.getElementById('c'+idx);
+  old.classList.remove('show');old.classList.add('out');
+  setTimeout(function(){old.classList.remove('out');},380);
+  nw.classList.add('show');cur=idx;
+  document.querySelectorAll('.cpill').forEach(function(p){p.classList.remove('on');});
+  el.classList.add('on');
+  var c=C[idx];
+  document.getElementById('pn').innerHTML=c.nudge;
+  document.getElementById('cl').textContent=c.label;
+  document.getElementById('ai').textContent=c.ai;
+  document.getElementById('an').textContent=c.an;
+  document.getElementById('am').textContent=c.am;
+}
+var obs=new IntersectionObserver(function(e){e.forEach(function(x){if(x.isIntersecting)x.target.classList.add('vis');});},{threshold:.1});
+document.querySelectorAll('.fu').forEach(function(el){obs.observe(el);});
+
+// ── Localised pricing — detects user's country via timezone, swaps the
+// Pro card price into local currency. Falls back to USD for unknown regions.
+// Pricing tuned for purchasing-power parity (PPP) — Indian users see ₹199,
+// US sees $2.79, UK sees £2.29, etc.
+(function(){
+  var TZ_TO_CC = {
+    'Asia/Kolkata':'IN','Asia/Calcutta':'IN','Asia/Karachi':'PK',
+    'Asia/Singapore':'SG','Asia/Kuala_Lumpur':'MY','Asia/Dubai':'AE',
+    'Asia/Tokyo':'JP','Asia/Hong_Kong':'HK','Asia/Manila':'PH',
+    'Australia/Sydney':'AU','Australia/Melbourne':'AU','Australia/Perth':'AU','Australia/Brisbane':'AU',
+    'Europe/London':'GB','Europe/Dublin':'IE',
+    'America/New_York':'US','America/Chicago':'US','America/Denver':'US','America/Los_Angeles':'US','America/Phoenix':'US','America/Anchorage':'US',
+    'America/Toronto':'CA','America/Vancouver':'CA','America/Montreal':'CA',
+  };
+  // Per-country pricing — beta monthly / yearly / post-beta monthly.
+  // Numbers picked for PPP — affordable in India, equivalent value globally.
+  var PRICES = {
+    US: { mo:'$2.79',  yr:'$19.99', reg:'$3.99' },
+    CA: { mo:'CA$3.99', yr:'CA$26.99', reg:'CA$4.99' },
+    GB: { mo:'£2.29',  yr:'£15.99', reg:'£2.99' },
+    AU: { mo:'A$4.49', yr:'A$29.99', reg:'A$5.99' },
+    SG: { mo:'S$3.99', yr:'S$28.99', reg:'S$4.99' },
+    MY: { mo:'RM12',   yr:'RM89',    reg:'RM15' },
+    AE: { mo:'AED 10', yr:'AED 75',  reg:'AED 14' },
+    IN: { mo:'₹199',   yr:'₹1,499',  reg:'₹299' },
+    PK: { mo:'₨ 599',  yr:'₨ 4,499', reg:'₨ 899' },
+    HK: { mo:'HK$22',  yr:'HK$159',  reg:'HK$29' },
+    JP: { mo:'¥399',   yr:'¥2,899',  reg:'¥579' },
+    PH: { mo:'₱149',   yr:'₱1,099',  reg:'₱199' },
+    IE: { mo:'€2.79',  yr:'€19.99',  reg:'€3.99' },
+  };
+  var DEFAULT = PRICES.US;
+  try {
+    var tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    var cc = TZ_TO_CC[tz];
+    var p = (cc && PRICES[cc]) || DEFAULT;
+    var setText = function(id, val){ var el = document.getElementById(id); if (el) el.textContent = val; };
+    setText('price-monthly', p.mo);
+    setText('price-yearly',  p.yr);
+    setText('price-regular', p.reg);
+    setText('price-regular-2', p.reg);
+  } catch (e) { /* keep USD defaults */ }
+})();
+</script>
+</body>
+</html>

@@ -344,6 +344,14 @@ Rules:
 - emoji: one relevant emoji
 - Split lists like "bhindi pumpkin onion tomato" or "milk eggs bread" into separate grocery items even without commas.
 - NEVER return quantity words as their own items. "1 dozen anda" → ONE item: Eggs (qty 12, unit pcs). Words like "dozen", "kg", "gram", "litre", "pack", "packet", "bunch", "loaf" are ALWAYS quantity qualifiers, never groceries.
+- Multi-word meat / produce names are SINGLE items — never split them. ALL of these are ONE item each:
+  * "pork belly" → ONE item named "Pork belly" (not Pork + Belly)
+  * "chicken breast", "chicken thigh", "chicken wing", "chicken leg" → ONE item each
+  * "ground beef", "minced beef", "minced lamb", "minced chicken", "lamb mince" → ONE item each
+  * "lamb chops", "pork chops", "pork ribs", "beef ribs", "spare ribs" → ONE item each
+  * "bell pepper", "spring onion", "green onion", "bok choy", "pak choy", "lady finger", "bottle gourd", "bitter gourd", "ridge gourd", "snake gourd", "ash gourd" → ONE item each
+  * "sweet potato", "baby corn", "fresh cream", "heavy cream", "sour cream", "cream cheese", "cottage cheese", "greek yogurt" → ONE item each
+  * "olive oil", "sesame oil", "soy sauce", "fish sauce", "oyster sauce", "hoisin sauce" → ONE item each
 - ALWAYS prefer the user-stated quantity over defaults. "500g methi" → Methi qty 500 unit g, NOT the default 1 bunch.
 - Ignore filler words like "bought", "got", "picked up", "some", "aur", "y", "und", "lah", "can".
 
@@ -385,6 +393,17 @@ Infer practical household defaults when quantity is missing:
 - coriander / dhania / cilantro: 1 bunch
 - bhindi / okra: 500 g
 - pumpkin / kaddu: 1 kg
+- beans / french beans / green beans: 250 g
+- carrots: 500 g
+- chicken: 500 g
+- fish: 500 g
+- cucumber: 2 pcs
+- broccoli: 1 pcs
+- mushroom / mushrooms: 1 packet
+- yogurt / curd / dahi: 400 g
+- cheese: 200 g
+- butter: 100 g
+- ghee: 500 ml
 
 Hindi: doodh=Milk, paneer=Paneer, aloo=Potato, pyaaz=Onion, dahi=Curd/Yogurt, atta=Flour, chawal=Rice, dal=Lentils, tamatar=Tomato, adrak=Ginger, lehsun=Garlic, sabzi=Vegetables, gosht=Meat, murgh=Chicken, machli=Fish, besan=Chickpea flour, maida=White flour, methi=Fenugreek, lauki=Bottle gourd, karela=Bitter gourd, baingan=Eggplant, gobi=Cauliflower, bhindi=Okra.
 Tamil: thakkali=Tomato, paal=Milk, thayir=Curd/Yogurt, muttai=Eggs, vengayam=Onion, urulaikilangu=Potato, poondu=Garlic, inji=Ginger, keerai=Spinach, arisi=Rice, paruppu=Dal, kozhi=Chicken, meen=Fish, muttakose=Cabbage.

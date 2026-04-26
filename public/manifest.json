@@ -1,0 +1,26 @@
+{
+  "name": "FridgeBee — What's for dinner?",
+  "short_name": "FridgeBee",
+  "description": "Track what's in your fridge. Cook what you have. Waste nothing.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FDFAF4",
+  "theme_color": "#F5A623",
+  "orientation": "portrait-primary",
+  "categories": ["food", "lifestyle", "productivity"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
